@@ -113,8 +113,7 @@ tailwind.config = {
       </div>
 
       <div id="video-wrap" class="relative aspect-video bg-[#0b1118] overflow-hidden scanline">
-        <img id="video-feed" src="http://127.0.0.1:8080/edge/video-feed" class="absolute inset-0 w-full h-full object-contain" alt="Live Video Feed" />
-        <canvas id="video-canvas" class="absolute inset-0 w-full h-full pointer-events-none hidden"></canvas>
+        <iframe src="http://127.0.0.1:8080/edge/video-feed" class="absolute inset-0 w-full h-full border-0" allow="autoplay" title="Live Video Feed"></iframe>
 
         <div id="breach-banner" class="hidden absolute top-3 left-1/2 -translate-x-1/2 z-20 px-4 py-2 rounded-md border-2 border-rose-500 bg-rose-600 text-white font-bold text-xs tracking-widest whitespace-nowrap shadow-xl shadow-rose-900/40">
           CRITICAL: ZONE BREACH DETECTED

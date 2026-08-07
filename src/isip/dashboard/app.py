@@ -11,12 +11,10 @@ import math
 import random
 import time
 from typing import Dict, List
-from io import BytesIO
 
 import pandas as pd
 import plotly.graph_objects as go
 import requests
-from PIL import Image
 import streamlit as st
 
 API_BASE = "http://127.0.0.1:8080/edge"
@@ -227,22 +225,10 @@ def main() -> None:
 
     st.divider()
     st.subheader("Live Video Feed")
-    video_placeholder = st.empty()
-    video_fallback = st.caption("Waiting for video stream...")
-
-    def render_video_feed():
-        try:
-            resp = requests.get("http://127.0.0.1:8080/edge/video-feed", timeout=2, stream=True)
-            if resp.status_code == 200:
-                video_fallback.empty()
-                image = Image.open(io.BytesIO(resp.content))
-                video_placeholder.image(image, use_container_width=True)
-            else:
-                video_fallback.caption(f"Video feed unavailable (HTTP {resp.status_code})")
-        except requests.RequestException:
-            video_fallback.caption("Video feed offline — start the edge orchestrator")
-
-    render_video_feed()
+    st.components.v1.html(
+        f'<img src="http://127.0.0.1:8080/edge/video-feed" style="width:100%; border-radius:8px; border:1px solid #1e293b;" />',
+        height=480,
+    )
 
     st.divider()
     st.subheader("Safety Events")

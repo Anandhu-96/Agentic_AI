@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..config import VisionConfig
@@ -223,7 +224,7 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
                     logger.exception("video feed error: %s", exc)
                     continue
 
-        return Response(
+        return StreamingResponse(
             gen_frames(),
             media_type="multipart/x-mixed-replace; boundary=frame",
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},

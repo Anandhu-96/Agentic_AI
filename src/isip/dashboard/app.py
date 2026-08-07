@@ -319,10 +319,8 @@ def main() -> None:
     col_video, col_zone = st.columns([3, 1])
     with col_video:
         st.subheader("🎥 Detection Feed — YOLO Inference")
-        st.components.v1.html(
-            '<iframe src="http://127.0.0.1:8080/edge/video-feed/detections" width="100%" height="480" style="border:none; border-radius:8px;" allow="autoplay"></iframe>',
-            height=500,
-        )
+        snapshot_url = f"{API_BASE}/video-snapshot?t={int(time.time())}"
+        st.image(snapshot_url, use_container_width=True)
 
     with col_zone:
         st.subheader("🗺️ Zone Intrusion Status")
@@ -373,10 +371,8 @@ def main() -> None:
 
     st.divider()
     st.subheader("Live Detection Video Feed")
-    st.components.v1.html(
-        '<iframe src="http://127.0.0.1:8080/edge/video-feed" width="100%" height="100%" style="border:none; border-radius:8px; object-fit:contain;" allow="autoplay"></iframe>',
-        height=520,
-    )
+    snapshot_url = f"{API_BASE}/video-snapshot?t={int(time.time())}"
+    st.image(snapshot_url, use_container_width=True)
 
 
 if __name__ == "__main__":

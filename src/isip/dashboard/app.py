@@ -76,7 +76,35 @@ def render_kpis(metrics: Dict) -> None:
     c4.metric("Uptime", f"{metrics.get('uptime_s', 0):.0f}s")
     estop = metrics.get("is_estop_locked", False)
     c5.metric("E-Stop", "LOCKED" if estop else "ARMED")
-    st.caption("🟢 online" if metrics.get("online") else "🟡 API offline — local emulation")
+
+
+def render_status_banner(metrics: Dict) -> None:
+    online = metrics.get("online", False)
+    stamp = time.strftime("%H:%M:%S")
+    if online:
+        st.success(
+            f"**EDGE NODE ONLINE** — live data from `{API_BASE}` · "
+            f"node `{metrics.get('node_id', '?')}` · checked {stamp}"
+        )
+    else:
+        st.warning(
+            f"**API OFFLINE** — could not reach `{API_BASE}` · showing **local "
+            f"emulation** (not live) · checked {stamp}"
+        )
+
+
+def render_system_check(metrics: Dict) -> None:
+    with st.expander("System Check (live diagnostic)", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Edge Node", metrics.get("node_id", "—"))
+        c2.metric("Uptime", f"{metrics.get('uptime_s', 0):.0f}s")
+        c3.metric("Latency", f"{metrics.get('latency_ms', 0):.1f} ms")
+        c4.metric("Inferences", metrics.get("inferences", 0))
+        st.caption(
+            f"Polling `{API_BASE}/metrics` · last refresh "
+            f"{time.strftime('%H:%M:%S')} · data source: "
+            f"{'**LIVE**' if metrics.get('online') else '**EMULATED**'}"
+        )
 
 
 def build_telemetry_chart(samples: List[Dict]) -> go.Figure:
@@ -149,6 +177,13 @@ def main() -> None:
             result = api_post("/release-estop")
             st.write(result or {"status": "released (emulated)"})
         st.divider()
+        if st.button("Run connection check", use_container_width=True):
+            try:
+                check = requests.get(f"{API_BASE}/health", timeout=2).json()
+                st.success(f"CONNECTED — {check}")
+            except requests.RequestException as exc:
+                st.error(f"UNREACHABLE — {API_BASE} ({exc.__class__.__name__})")
+        st.divider()
         st.subheader("Audit Ledger")
         for row in api_get("/audit?limit=8"):
             st.code(
@@ -156,7 +191,9 @@ def main() -> None:
                 language=None,
             )
 
+    render_status_banner(metrics)
     render_kpis(metrics)
+    render_system_check(metrics)
 
     # Telemetry + RUL
     col1, col2 = st.columns([3, 1])

@@ -90,6 +90,10 @@ tailwind.config = {
         <i data-lucide="network" class="w-4 h-4"></i>
         <span class="hidden sm:inline">Network: </span>OFFLINE EDGE RESILIENT
       </span>
+      <span id="backend-pill" class="flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700 bg-slate-800/50 text-[11px] text-slate-300">
+        <i data-lucide="heart-pulse" class="w-3.5 h-3.5"></i>
+        <span id="backend-text">BACKEND: CHECKING...</span>
+      </span>
     </div>
   </header>
 
@@ -543,6 +547,24 @@ function ambientLog() {
 setInterval(liveMetrics, 1000);
 setInterval(ambientLog, 2500);
 
+/* ================= BACKEND STATUS CHECK ================= */
+async function checkBackend() {
+  const pill = $('backend-pill'), txt = $('backend-text');
+  try {
+    const resp = await fetch('http://127.0.0.1:8080/edge/metrics', { mode: 'cors' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const m = await resp.json();
+    txt.textContent = 'BACKEND: ONLINE (' + m.latency_ms.toFixed(1) + 'ms)';
+    pill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-[11px] text-emerald-300';
+    const a = $('m-latency'); if (a) a.textContent = m.latency_ms.toFixed(1);
+    const b = $('m-alerts'); if (b) b.textContent = m.alerts;
+  } catch (e) {
+    txt.textContent = 'BACKEND: OFFLINE';
+    pill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full border border-rose-500/40 bg-rose-500/10 text-[11px] text-rose-300';
+  }
+}
+setInterval(checkBackend, 5000);
+
 /* ================= TABS & WIRING ================= */
 function tabBtn(on, off) {
   on.className = 'tab-btn flex-1 px-4 py-2 text-[11px] tracking-wide text-slate-200 border-b-2 border-emerald-500 bg-slate-800/40 flex items-center justify-center gap-2';
@@ -575,6 +597,7 @@ resizeCanvas();
 requestAnimationFrame(drawFrame);
 initIcons();
 liveMetrics();
+checkBackend();
 </script>
 </body>
 </html>

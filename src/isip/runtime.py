@@ -114,23 +114,39 @@ class VideoStreamProducer:
                     violations = evaluate_ppe(workers, detections, self.vision_cfg)
 
                     h, w = frame.shape[:2]
+                    workers = [d for d in detections if d.class_name == "person"]
+                    violations = evaluate_ppe(workers, detections, self.vision_cfg)
+                    active_zones = set()
+                    for worker in workers:
+                        wx, wy = worker.bbox_center
+                        zone = self.geofences.locate((wx / w, wy / h))
+                        if zone is not None:
+                            active_zones.add(zone.name)
                     for zone in self.geofences.zones.values():
                         pts = np.array(zone.polygon, dtype=np.float32)
                         pts[:, 0] *= w
                         pts[:, 1] *= h
                         pts = pts.astype(int)
                         if len(pts) >= 3:
+                            is_active = zone.name in active_zones
+                            base_color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
                             overlay = frame.copy()
-                            color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
-                            cv2.fillPoly(overlay, [pts], color=color)
-                            cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, frame)
-                            cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=2)
+                            fill_alpha = 0.35 if is_active else 0.15
+                            cv2.fillPoly(overlay, [pts], color=base_color)
+                            cv2.addWeighted(overlay, fill_alpha, frame, 1.0 - fill_alpha, 0, frame)
+                            line_thickness = 4 if is_active else 2
+                            cv2.polylines(frame, [pts], isClosed=True, color=base_color, thickness=line_thickness)
                             for i, (px, py) in enumerate(pts):
-                                cv2.circle(frame, (int(px), int(py)), 4, color, -1)
-                                cv2.circle(frame, (int(px), int(py)), 6, (255, 255, 255), 1)
-                            label_y = max(12, int(pts[:, 1].min()) - 8)
-                            cv2.putText(frame, zone.name, (int(pts[:, 0].min()), label_y),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                                radius = 6 if is_active else 4
+                                cv2.circle(frame, (int(px), int(py)), radius, base_color, -1)
+                                cv2.circle(frame, (int(px), int(py)), radius + 3, (255, 255, 255), 2)
+                            label_y = max(14, int(pts[:, 1].min()) - 10)
+                            if is_active:
+                                cv2.putText(frame, f"{zone.name} [ACTIVE]", (int(pts[:, 0].min()), label_y),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 3)
+                            else:
+                                cv2.putText(frame, zone.name, (int(pts[:, 0].min()), label_y),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, base_color, 2)
 
                     for det in detections:
                         x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)

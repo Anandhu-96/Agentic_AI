@@ -3,7 +3,7 @@ edge:
   hardware: "nvidia-jetson-orin-nano"
   inference_backend: "yolov8"          # yolov8 | synthetic
   target_latency_ms: 20
-  fps_limit: 30
+  fps_limit: 5
 
 video:
   source: "We_want_the_vedio_of_the_engin.mp4"

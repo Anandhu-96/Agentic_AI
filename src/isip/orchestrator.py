@@ -303,7 +303,7 @@ class EdgeOrchestrator:
             )
         logger.info(
             "edge orchestrator online: backend=%s latency_budget=%dms",
-            self.settings.edge.inference_backend,
+            self.settings.vision.backend,
             self.settings.edge.target_latency_ms,
         )
         await asyncio.gather(*tasks)

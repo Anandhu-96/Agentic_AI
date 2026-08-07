@@ -20,6 +20,7 @@ class VideoConfig(BaseModel):
 
 class VisionConfig(BaseModel):
     model: str = "yolov8n.pt"
+    backend: str = "synthetic"  # synthetic (demo) | yolov8 (real inference)
     conf_threshold: float = 0.45
     iou_threshold: float = 0.5
     classes: List[str] = Field(default_factory=lambda: ["person", "helmet"])

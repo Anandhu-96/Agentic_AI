@@ -76,7 +76,7 @@ anomalies, RUL updates, and relay trips can all be demonstrated immediately.
 The camera is **never enabled** by default (`config/config.yaml →
 `video.synthetic_camera: true`). To use a real webcam/video feed, set
 `video.synthetic_camera: false` and `video.source` (camera index, file, or
-RTSP URL), and set `vision.inference_backend: yolov8` with `yolov8n.pt`.
+RTSP URL), and set `vision.backend: yolov8` with `vision.model: yolov8n.pt`.
 
 ## REST API
 

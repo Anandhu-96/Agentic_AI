@@ -148,8 +148,12 @@ class SyntheticDetector(ObjectDetector):
 
 
 def build_detector(config: VisionConfig) -> ObjectDetector:
-    """Instantiate the configured detector with graceful fallbacks."""
-    backend = getattr(config, "backend", "yolov8")
+    """Instantiate the configured detector with graceful fallbacks.
+
+    ``config.backend`` = "synthetic" (deterministic demo, no hardware) or
+    "yolov8" (real Ultralytics inference).
+    """
+    backend = (config.backend or "yolov8").lower()
     if config.model and backend == "yolov8":
         try:
             return YoloDetector(config)

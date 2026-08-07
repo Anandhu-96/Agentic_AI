@@ -15,6 +15,7 @@ video:
 
 vision:
   model: "yolov8n.pt"
+  backend: "synthetic"                  # synthetic (zero-hardware demo) | yolov8
   conf_threshold: 0.45
   iou_threshold: 0.5
   classes:

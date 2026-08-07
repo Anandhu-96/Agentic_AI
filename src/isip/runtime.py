@@ -118,10 +118,18 @@ class VideoStreamProducer:
                         pts[:, 0] *= w
                         pts[:, 1] *= h
                         pts = pts.astype(int)
-                        color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
-                        cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=2)
-                        cv2.putText(frame, zone.name, (pts[0][0], pts[0][1] - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                        if len(pts) >= 3:
+                            overlay = frame.copy()
+                            color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
+                            cv2.fillPoly(overlay, [pts], color=color)
+                            cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, frame)
+                            cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=2)
+                            for i, (px, py) in enumerate(pts):
+                                cv2.circle(frame, (int(px), int(py)), 4, color, -1)
+                                cv2.circle(frame, (int(px), int(py)), 6, (255, 255, 255), 1)
+                            label_y = max(12, int(pts[:, 1].min()) - 8)
+                            cv2.putText(frame, zone.name, (int(pts[:, 0].min()), label_y),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
                     for det in detections:
                         x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)

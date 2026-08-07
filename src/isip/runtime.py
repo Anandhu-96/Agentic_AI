@@ -53,14 +53,20 @@ class VideoStreamProducer:
         self.video_cfg = settings.video
         self.detector = build_detector(self.vision_cfg)
         self.geofences = GeofenceEngine.from_yaml(self.vision_cfg.geofences_file)
-        self._queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=30)
+        self._queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=20)
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._error: Optional[Exception] = None
+
+    @property
+    def error(self) -> Optional[Exception]:
+        return self._error
 
     def start(self) -> None:
         if self._running:
             return
         self._running = True
+        self._error = None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -76,81 +82,84 @@ class VideoStreamProducer:
             return None
 
     def _run(self) -> None:
-        cap = None
-        if not self.video_cfg.synthetic_camera:
-            cap = cv2.VideoCapture(self.video_cfg.source)
-            if not cap.isOpened():
-                cap = None
+        try:
+            cap = None
+            if not self.video_cfg.synthetic_camera:
+                cap = cv2.VideoCapture(self.video_cfg.source)
+                if not cap.isOpened():
+                    cap = None
 
-        target_fps = max(1, int(getattr(self.settings.edge, "fps_limit", 10)))
-        interval = 1.0 / target_fps
+            target_fps = max(1, int(getattr(self.settings.edge, "fps_limit", 8)))
+            interval = 1.0 / target_fps
 
-        while self._running:
-            try:
-                frame_start = time.perf_counter()
-                if cap is not None:
-                    ret, frame = cap.read()
-                    if not ret:
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        continue
-                    if self.video_cfg.width and self.video_cfg.height:
-                        frame = cv2.resize(frame, (self.video_cfg.width, self.video_cfg.height))
-                else:
-                    frame = np.zeros((self.video_cfg.height, self.video_cfg.width, 3), dtype=np.uint8)
+            while self._running:
+                try:
+                    frame_start = time.perf_counter()
+                    if cap is not None:
+                        ret, frame = cap.read()
+                        if not ret:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            continue
+                        if self.video_cfg.width and self.video_cfg.height:
+                            frame = cv2.resize(frame, (self.video_cfg.width, self.video_cfg.height))
+                    else:
+                        frame = np.zeros((self.video_cfg.height, self.video_cfg.width, 3), dtype=np.uint8)
 
-                started = time.perf_counter()
-                detections = self.detector.detect(frame)
-                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                    started = time.perf_counter()
+                    detections = self.detector.detect(frame)
+                    elapsed_ms = (time.perf_counter() - started) * 1000.0
 
-                workers = [d for d in detections if d.class_name == "person"]
-                violations = evaluate_ppe(workers, detections, self.vision_cfg)
+                    workers = [d for d in detections if d.class_name == "person"]
+                    violations = evaluate_ppe(workers, detections, self.vision_cfg)
 
-                h, w = frame.shape[:2]
-                for zone in self.geofences.zones.values():
-                    pts = np.array(zone.polygon, dtype=np.float32)
-                    pts[:, 0] *= w
-                    pts[:, 1] *= h
-                    pts = pts.astype(int)
-                    color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
-                    cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=2)
-                    cv2.putText(frame, zone.name, (pts[0][0], pts[0][1] - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    h, w = frame.shape[:2]
+                    for zone in self.geofences.zones.values():
+                        pts = np.array(zone.polygon, dtype=np.float32)
+                        pts[:, 0] *= w
+                        pts[:, 1] *= h
+                        pts = pts.astype(int)
+                        color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
+                        cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=2)
+                        cv2.putText(frame, zone.name, (pts[0][0], pts[0][1] - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-                for det in detections:
-                    x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
-                    color = (40, 180, 40)
-                    if det.class_name == "person":
-                        worker_label = f"W-{int(det.bbox_center[0] * 1000)}"
-                        has_violation = any(v[0] == worker_label for v in violations)
-                        color = (40, 40, 180) if has_violation else (40, 180, 40)
-                    elif det.class_name == "helmet":
-                        color = (180, 180, 40)
-                    elif det.class_name == "vest":
-                        color = (180, 40, 180)
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    label = f"{det.class_name} ({det.confidence:.2f})"
-                    cv2.putText(frame, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    for det in detections:
+                        x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
+                        color = (40, 180, 40)
+                        if det.class_name == "person":
+                            worker_label = f"W-{int(det.bbox_center[0] * 1000)}"
+                            has_violation = any(v[0] == worker_label for v in violations)
+                            color = (40, 40, 180) if has_violation else (40, 180, 40)
+                        elif det.class_name == "helmet":
+                            color = (180, 180, 40)
+                        elif det.class_name == "vest":
+                            color = (180, 40, 180)
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                        label = f"{det.class_name} ({det.confidence:.2f})"
+                        cv2.putText(frame, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-                cv2.putText(frame, f"FPS: {1000.0/max(elapsed_ms,1.0):.1f} | Latency: {elapsed_ms:.1f}ms",
-                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    cv2.putText(frame, f"FPS: {1000.0/max(elapsed_ms,1.0):.1f} | Latency: {elapsed_ms:.1f}ms",
+                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-                ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                if ret:
-                    frame_bytes = buf.tobytes()
-                    while not self._queue.full():
-                        try:
-                            self._queue.put_nowait(frame_bytes)
-                            break
-                        except queue.Full:
+                    ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    if ret:
+                        frame_bytes = buf.tobytes()
+                        while not self._queue.full():
                             try:
-                                self._queue.get_nowait()
-                            except queue.Empty:
-                                pass
+                                self._queue.put_nowait(frame_bytes)
+                                break
+                            except queue.Full:
+                                try:
+                                    self._queue.get_nowait()
+                                except queue.Empty:
+                                    pass
 
-                elapsed = time.perf_counter() - frame_start
-                time.sleep(max(0.0, interval - elapsed))
-            except Exception as exc:
-                time.sleep(0.1)
+                    elapsed = time.perf_counter() - frame_start
+                    time.sleep(max(0.0, interval - elapsed))
+                except Exception as exc:
+                    time.sleep(0.1)
+        except Exception as exc:
+            self._error = exc
 
 
 class EdgeRuntime:

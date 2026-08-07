@@ -298,6 +298,8 @@ class EdgeOrchestrator:
 
     async def run(self, with_api: bool = True) -> None:
         self.runtime.video_stream.start()
+        if self.runtime.video_stream.error is not None:
+            logger.error("video stream failed to start: %s", self.runtime.video_stream.error)
         tasks = [
             asyncio.create_task(self._inference_loop(), name="inference"),
             asyncio.create_task(self._telemetry_loop(), name="telemetry"),

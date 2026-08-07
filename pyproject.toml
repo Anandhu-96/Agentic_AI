@@ -27,6 +27,7 @@ dependencies = [
   "pymodbus>=3.6",
   "paho-mqtt>=1.6",
   "requests>=2.31",
+  "pillow>=10.0",
 ]
 
 [project.optional-dependencies]

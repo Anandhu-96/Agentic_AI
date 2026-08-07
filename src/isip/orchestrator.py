@@ -119,9 +119,8 @@ class EdgeOrchestrator:
 
                 with self.runtime.metrics.lock:
                     self.runtime.metrics.last_latency_ms = elapsed_ms
-                    self.runtime.metrics.last_fps = (
-                        1000.0 / elapsed_ms if elapsed_ms > 0 else 0.0
-                    )
+                    actual_fps = 1000.0 / max(elapsed_ms, 1.0)
+                    self.runtime.metrics.last_fps = min(actual_fps, float(self.settings.edge.fps_limit))
                     self.runtime.metrics.inference_count += 1
 
                 if frame_idx % 15 == 0:
@@ -198,6 +197,8 @@ class EdgeOrchestrator:
         self._active_ppe = active
 
     async def _trip_relay(self, reason: str) -> None:
+        if self.runtime.plc.is_locked:
+            return
         latency_ms = await self.runtime.plc.trip("HARD")
         with self.runtime.metrics.lock:
             self.runtime.metrics.is_estop_locked = True

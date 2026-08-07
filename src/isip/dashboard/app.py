@@ -226,8 +226,8 @@ def main() -> None:
     st.divider()
     st.subheader("Live Video Feed")
     st.components.v1.html(
-        f'<img src="http://127.0.0.1:8080/edge/video-feed" style="width:100%; border-radius:8px; border:1px solid #1e293b;" />',
-        height=480,
+        '<iframe src="http://127.0.0.1:8080/edge/video-feed" width="100%" height="480" style="border:none; border-radius:8px;" allow="autoplay"></iframe>',
+        height=500,
     )
 
     st.divider()

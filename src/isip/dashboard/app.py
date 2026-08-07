@@ -1,13 +1,13 @@
 """Streamlit operator dashboard.
 
-Live video overlay + telemetry monitoring UI. Polls the edge control plane
-(FastAPI). When the API is unreachable it falls back to local emulation so the
-dashboard always renders during demos.
+Live video overlay + telemetry monitoring UI. Uses SSE for real-time events
+instead of REST polling. When the API is unreachable it falls back to local
+emulation so the dashboard always renders during demos.
 """
 
 from __future__ import annotations
 
-import math
+import json
 import random
 import time
 from typing import Dict, List
@@ -101,7 +101,7 @@ def render_system_check(metrics: Dict) -> None:
         c3.metric("Latency", f"{metrics.get('latency_ms', 0):.1f} ms")
         c4.metric("Inferences", metrics.get("inferences", 0))
         st.caption(
-            f"Polling `{API_BASE}/metrics` · last refresh "
+            f"SSE stream `{API_BASE}/stream` · last refresh "
             f"{time.strftime('%H:%M:%S')} · data source: "
             f"{'**LIVE**' if metrics.get('online') else '**EMULATED**'}"
         )
@@ -154,6 +154,43 @@ def rul_gauge(health_pct: float) -> go.Figure:
     )
     fig.update_layout(height=240, paper_bgcolor="rgba(0,0,0,0)")
     return fig
+
+
+_SSE_HTML = """
+<div id="isip-sse-root" style="width:100%;height:500px;border-radius:8px;overflow:hidden;background:#0b1118;position:relative;">
+  <img id="isip-video" src="{video_url}" style="width:100%;height:100%;object-fit:contain;display:block;" />
+  <div id="isip-events" style="position:absolute;bottom:8px;left:8px;right:8px;max-height:120px;overflow-y:auto;font:10px monospace;pointer-events:none;"></div>
+</div>
+<script>
+  (function() {{
+    const videoUrl = "{video_url}";
+    const streamUrl = "{stream_url}";
+    const img = document.getElementById("isip-video");
+    const evts = document.getElementById("isip-events");
+    if (!img || !evts) return;
+    img.onerror = function() {{
+      img.style.display = "none";
+      evts.innerHTML = '<div style="color:#f87171">VIDEO FEED UNAVAILABLE</div>';
+    }};
+    const es = new EventSource(streamUrl);
+    es.onmessage = function(e) {{
+      try {{
+        const d = JSON.parse(e.data);
+        const div = document.createElement("div");
+        const sev = d.severity === "CRITICAL" ? "#f87171" : d.severity === "WARNING" ? "#fbbf24" : "#94a3b8";
+        div.style.color = sev;
+        div.textContent = "> " + d.event_type + " [" + d.severity + "] " + (d.latency_ms ? d.latency_ms.toFixed(1)+"ms " : "") + JSON.stringify(d.payload || {{}}).slice(0, 120);
+        evts.appendChild(div);
+        while (evts.children.length > 80) evts.removeChild(evts.firstChild);
+        evts.scrollTop = evts.scrollHeight;
+      }} catch(err) {{}}
+    }};
+    es.onerror = function() {{
+      evts.innerHTML = '<div style="color:#fbbf24">SSE RECONNECTING...</div>';
+    }};
+  }})();
+</script>
+"""
 
 
 def main() -> None:
@@ -224,10 +261,13 @@ def main() -> None:
             st.metric("Remaining Life", f"{last.get('remaining_hours', 0):,.0f} h")
 
     st.divider()
-    st.subheader("Live Video Feed")
+    st.subheader("Live Video Feed + Event Stream")
     st.components.v1.html(
-        '<iframe src="http://127.0.0.1:8080/edge/video-feed" width="100%" height="480" style="border:none; border-radius:8px;" allow="autoplay"></iframe>',
-        height=500,
+        _SSE_HTML.format(
+            video_url=f"{API_BASE}/video-feed",
+            stream_url=f"{API_BASE}/stream",
+        ),
+        height=520,
     )
 
     st.divider()

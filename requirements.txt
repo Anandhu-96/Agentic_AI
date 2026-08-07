@@ -20,6 +20,7 @@ plotly>=5.20
 # Telemetry & protocols
 pymodbus>=3.6
 paho-mqtt>=1.6
+requests>=2.31
 
 # Quality
 pytest>=8.0

@@ -113,7 +113,8 @@ tailwind.config = {
       </div>
 
       <div id="video-wrap" class="relative aspect-video bg-[#0b1118] overflow-hidden scanline">
-        <canvas id="video-canvas" class="absolute inset-0 w-full h-full"></canvas>
+        <img id="detection-image" src="detection_output.jpg" class="absolute inset-0 w-full h-full object-contain" alt="ISIP Detection Feed" />
+        <canvas id="video-canvas" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
 
         <div id="breach-banner" class="hidden absolute top-3 left-1/2 -translate-x-1/2 z-20 px-4 py-2 rounded-md border-2 border-rose-500 bg-rose-600 text-white font-bold text-xs tracking-widest whitespace-nowrap shadow-xl shadow-rose-900/40">
           CRITICAL: ZONE BREACH DETECTED
@@ -524,27 +525,85 @@ components:
 $('api-spec').textContent = API_SPEC;
 
 /* ================= LIVE LOOPS ================= */
-function liveMetrics() {
-  $('m-latency').textContent = rnd(13.0, 15.5, 1);
-  $('m-fps').textContent = rnd(68, 73, 1);
-  $('feed-clock').textContent = new Date().toTimeString().slice(0, 8);
+let currentDetections = [];
+let apiAvailable = false;
 
-  const base = state.thermal ? 92 : parseFloat($('temp-slider').value);
-  const tv = base + (Math.random() * 1.4 - 0.7);
-  const vib = state.thermal ? 60 + Math.random() * 4 : 40 + Math.random() * 6;
-  labels.push(new Date().toLocaleTimeString('en-GB', { hour12: false, hourCycle: 'h23' }));
-  temps.push(tv); vibs.push(vib);
-  if (labels.length > maxPts) { labels.shift(); temps.shift(); vibs.shift(); }
-  chart.update();
+function drawDetections() {
+  const cv = $('video-canvas');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  
+  currentDetections.forEach(det => {
+    const x = det.x1 * cv.width / 1280;
+    const y = det.y1 * cv.height / 720;
+    const w = (det.x2 - det.x1) * cv.width / 1280;
+    const h = (det.y2 - det.y1) * cv.height / 720;
+    
+    let color = '#22c55e';
+    if (det.class_name === 'person') color = '#3b82f6';
+    else if (det.class_name === 'helmet') color = '#eab308';
+    else if (det.class_name === 'vest') color = '#a855f7';
+    
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+    
+    ctx.font = 'bold 11px monospace';
+    const label = `${det.class_name} (${det.confidence.toFixed(2)})`;
+    const tw = ctx.measureText(label).width + 8;
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y - 16, tw, 16);
+    ctx.fillStyle = '#0b1118';
+    ctx.fillText(label, x + 4, y - 5);
+  });
 }
+
+async function fetchDetections() {
+  try {
+    const resp = await fetch('http://127.0.0.1:8080/edge/events?limit=20', { mode: 'cors' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const events = await resp.json();
+    const inferenceEvents = events.filter(e => e.event_type === 'INFERENCE_OK');
+    if (inferenceEvents.length > 0 && inferenceEvents[0].payload && inferenceEvents[0].payload.detections) {
+      currentDetections = inferenceEvents[0].payload.detections;
+      apiAvailable = true;
+      drawDetections();
+      
+      const lastEvt = inferenceEvents[0];
+      const lat = $('m-latency');
+      const fps = $('m-fps');
+      if (lat && lastEvt.latency_ms) lat.textContent = lastEvt.latency_ms.toFixed(1);
+      if (fps && lastEvt.payload.fps) fps.textContent = lastEvt.payload.fps.toFixed(1);
+    }
+  } catch (e) {
+    apiAvailable = false;
+  }
+}
+
+function liveMetrics() {
+  $('feed-clock').textContent = new Date().toTimeString().slice(0, 8);
+  if (!apiAvailable) {
+    const base = state.thermal ? 92 : parseFloat($('temp-slider').value);
+    const tv = base + (Math.random() * 1.4 - 0.7);
+    const vib = state.thermal ? 60 + Math.random() * 4 : 40 + Math.random() * 6;
+    labels.push(new Date().toLocaleTimeString('en-GB', { hour12: false, hourCycle: 'h23' }));
+    temps.push(tv); vibs.push(vib);
+    if (labels.length > maxPts) { labels.shift(); temps.shift(); vibs.shift(); }
+    chart.update();
+  }
+}
+
 function ambientLog() {
   if (state.estop) return;
   const r = Math.random();
-  if (r < 0.3) appendLog('INFERENCE_OK', 'INFO', { cam: 'CAM-01', detections: 3 });
+  if (r < 0.3) appendLog('INFERENCE_OK', 'INFO', { cam: 'CAM-01', detections: currentDetections.length || 3 });
   else if (r < 0.5) appendLog('PPE_COMPLIANT', 'INFO', { helmet: true, vest: true, worker: 'W-104' });
   else if (r < 0.7) appendLog('HEARTBEAT', 'INFO', { uptime_s: rnd(120, 900, 0), edge_ok: true });
 }
+
 setInterval(liveMetrics, 1000);
+setInterval(fetchDetections, 500);
 setInterval(ambientLog, 2500);
 
 /* ================= BACKEND STATUS CHECK ================= */
@@ -598,6 +657,7 @@ requestAnimationFrame(drawFrame);
 initIcons();
 liveMetrics();
 checkBackend();
+fetchDetections();
 </script>
 </body>
 </html>

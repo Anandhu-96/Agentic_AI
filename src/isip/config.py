@@ -27,6 +27,7 @@ class VisionConfig(BaseModel):
     ppe_required: List[str] = Field(default_factory=lambda: ["helmet", "vest"])
     ppe_rules: Dict[str, Any] = Field(default_factory=dict)
     geofences_file: str = "config/geofences.yaml"
+    device: str = "cpu"
 
 
 class ThresholdConfig(BaseModel):

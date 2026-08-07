@@ -38,7 +38,10 @@ ANOMALY_EVENT = {
     "temperature": EventType.THERMAL_ANOMALY,
     "vibration": EventType.VIBRATION_ANOMALY,
     "co_ppm": EventType.GAS_ANOMALY,
+    "gas_ppm": EventType.GAS_ANOMALY,
 }
+
+_DEFAULT_ANOMALY_EVENT = EventType.ANOMALY_CLEARED
 
 _STATUS_SEVERITY = {
     "NORMAL": Severity.INFO,
@@ -104,33 +107,38 @@ class EdgeOrchestrator:
         interval = 1.0 / max(1, self.settings.edge.fps_limit)
         frame_idx = 0
         while True:
-            started = time.perf_counter()
-            frame = self._read_frame()
-            detections = self.detector.detect(frame)
-            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            try:
+                started = time.perf_counter()
+                frame = self._read_frame()
+                detections = self.detector.detect(frame)
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
 
-            workers = [d for d in detections if d.class_name == "person"]
-            await self._check_geofences(workers)
-            await self._check_ppe(workers, detections)
+                workers = [d for d in detections if d.class_name == "person"]
+                await self._check_geofences(workers)
+                await self._check_ppe(workers, detections)
 
-            with self.runtime.metrics.lock:
-                self.runtime.metrics.last_latency_ms = elapsed_ms
-                self.runtime.metrics.last_fps = (
-                    1000.0 / elapsed_ms if elapsed_ms > 0 else 0.0
-                )
-                self.runtime.metrics.inference_count += 1
-
-            if frame_idx % 15 == 0:
-                await self.runtime.broker.publish(
-                    InferenceEvent(
-                        event_type=EventType.INFERENCE_OK,
-                        severity=Severity.INFO,
-                        latency_ms=elapsed_ms,
-                        detections=[d.__dict__ for d in detections[:8]],
-                        fps=self.runtime.metrics.last_fps,
+                with self.runtime.metrics.lock:
+                    self.runtime.metrics.last_latency_ms = elapsed_ms
+                    self.runtime.metrics.last_fps = (
+                        1000.0 / elapsed_ms if elapsed_ms > 0 else 0.0
                     )
-                )
-            frame_idx += 1
+                    self.runtime.metrics.inference_count += 1
+
+                if frame_idx % 15 == 0:
+                    await self.runtime.broker.publish(
+                        InferenceEvent(
+                            event_type=EventType.INFERENCE_OK,
+                            severity=Severity.INFO,
+                            latency_ms=elapsed_ms,
+                            detections=[d.__dict__ for d in detections[:8]],
+                            fps=self.runtime.metrics.last_fps,
+                        )
+                    )
+                frame_idx += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("inference loop error: %s", exc)
+                await asyncio.sleep(0.1)
+                continue
             await asyncio.sleep(max(0.0, interval - elapsed_ms / 1000.0))
 
     async def _check_geofences(self, workers: List[Detection]) -> None:
@@ -190,7 +198,7 @@ class EdgeOrchestrator:
         self._active_ppe = active
 
     async def _trip_relay(self, reason: str) -> None:
-        latency_ms = self.runtime.plc.trip("HARD")
+        latency_ms = await self.runtime.plc.trip("HARD")
         with self.runtime.metrics.lock:
             self.runtime.metrics.is_estop_locked = True
             self.runtime.metrics.alert_count += 1
@@ -207,47 +215,55 @@ class EdgeOrchestrator:
     # ----------------------------------------------------------------- iiot
 
     async def _telemetry_loop(self) -> None:
-        async for sample in self.telemetry.stream():
-            await self.runtime.broker.publish(
-                BaseEvent(
-                    event_type=EventType.TELEMETRY,
-                    severity=_STATUS_SEVERITY.get(sample.status, Severity.INFO),
-                    payload=sample.model_dump(),
-                )
-            )
-            anomaly = self.anomaly.evaluate(sample.sensor_id, sample.value)
-            if anomaly is not None:
-                event_type = ANOMALY_EVENT.get(sample.metric, EventType.ANOMALY_CLEARED)
-                severity = (
-                    Severity.CRITICAL
-                    if anomaly.kind == "THRESHOLD_CRITICAL"
-                    else Severity.WARNING
-                )
-                event = BaseEvent(
-                    event_type=event_type,
-                    severity=severity,
-                    payload={
-                        "sensor_id": sample.sensor_id,
-                        "kind": anomaly.kind,
-                        "value": anomaly.value,
-                        "threshold": anomaly.threshold,
-                        "message": anomaly.message,
-                    },
-                )
-                await self.runtime.broker.publish(event)
-                self._audit(event)
-                if sample.sensor_id == "TMP_BRG_02" and anomaly.kind == "THRESHOLD_CRITICAL":
-                    await self._trip_relay(reason="thermal_critical")
-
-            if sample.sensor_id == "TMP_BRG_02":
-                rul_state = self.rul.observe(sample.value)
-                await self.runtime.broker.publish(
-                    BaseEvent(
-                        event_type=EventType.RUL_UPDATE,
-                        severity=_STATUS_SEVERITY.get(rul_state.status, Severity.INFO),
-                        payload=rul_state.__dict__,
+        try:
+            async for sample in self.telemetry.stream():
+                try:
+                    await self.runtime.broker.publish(
+                        BaseEvent(
+                            event_type=EventType.TELEMETRY,
+                            severity=_STATUS_SEVERITY.get(sample.status, Severity.INFO),
+                            payload=sample.model_dump(),
+                        )
                     )
-                )
+                    anomaly = self.anomaly.evaluate(sample.sensor_id, sample.value)
+                    if anomaly is not None:
+                        event_type = ANOMALY_EVENT.get(sample.metric, _DEFAULT_ANOMALY_EVENT)
+                        severity = (
+                            Severity.CRITICAL
+                            if anomaly.kind == "THRESHOLD_CRITICAL"
+                            else Severity.WARNING
+                        )
+                        event = BaseEvent(
+                            event_type=event_type,
+                            severity=severity,
+                            payload={
+                                "sensor_id": sample.sensor_id,
+                                "kind": anomaly.kind,
+                                "value": anomaly.value,
+                                "threshold": anomaly.threshold,
+                                "message": anomaly.message,
+                            },
+                        )
+                        await self.runtime.broker.publish(event)
+                        self._audit(event)
+                        if sample.sensor_id == "TMP_BRG_02" and anomaly.kind == "THRESHOLD_CRITICAL":
+                            await self._trip_relay(reason="thermal_critical")
+
+                    if sample.sensor_id == "TMP_BRG_02":
+                        rul_state = self.rul.observe(sample.value)
+                        await self.runtime.broker.publish(
+                            BaseEvent(
+                                event_type=EventType.RUL_UPDATE,
+                                severity=_STATUS_SEVERITY.get(rul_state.status, Severity.INFO),
+                                payload=rul_state.__dict__,
+                            )
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("telemetry sample error: %s", exc)
+                    continue
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("telemetry loop error: %s", exc)
+            await asyncio.sleep(1.0)
 
     # ---------------------------------------------------------------- support
 

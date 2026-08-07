@@ -82,7 +82,7 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
 
     @app.post(f"{prefix}/trigger-estop", tags=["control"])
     async def trigger_estop(req: EStopRequest) -> dict:
-        latency_ms = runtime.plc.trip(req.mode)
+        latency_ms = await runtime.plc.trip(req.mode)
         with runtime.metrics.lock:
             runtime.metrics.is_estop_locked = True
             runtime.metrics.alert_count += 1
@@ -109,7 +109,7 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
     async def release_estop() -> dict:
         if not runtime.plc.is_locked:
             raise HTTPException(status_code=409, detail="E-Stop not locked")
-        runtime.plc.release()
+        await runtime.plc.release()
         with runtime.metrics.lock:
             runtime.metrics.is_estop_locked = False
         event = EStopEvent(

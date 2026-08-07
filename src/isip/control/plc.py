@@ -8,6 +8,7 @@ demonstrated on any machine.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Optional
@@ -52,11 +53,11 @@ class PlcRelay:
     def last_latency_ms(self) -> Optional[float]:
         return self._last_latency_ms
 
-    def trip(self, mode: str = "HARD") -> float:
+    async def trip(self, mode: str = "HARD") -> float:
         """Cut power to the line; returns trip latency in milliseconds."""
         started = time.perf_counter()
         if self._trip_delay_s > 0:
-            time.sleep(self._trip_delay_s)
+            await asyncio.sleep(self._trip_delay_s)
         self._powered = False
         self._locked = True
         if self._gpio_iface is not None:
@@ -68,7 +69,7 @@ class PlcRelay:
         )
         return self._last_latency_ms
 
-    def release(self) -> None:
+    async def release(self) -> None:
         self._powered = True
         self._locked = False
         if self._gpio_iface is not None:

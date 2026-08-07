@@ -78,7 +78,7 @@ class YoloDetector(ObjectDetector):
             conf=self.config.conf_threshold,
             iou=self.config.iou_threshold,
             verbose=False,
-            device="cpu",
+            device=self.config.device,
         )
         self._last_latency = (time.perf_counter() - started) * 1000.0
 
@@ -125,20 +125,39 @@ class SyntheticDetector(ObjectDetector):
         def norm(x: float, y: float) -> tuple:
             return x * w, y * h
 
-        # Worker drifts across DANGER_ZONE_A (0.40-0.70 x, 0.40-0.75 y).
+        def worker_box(cx, cy, scale=1.0):
+            bw = w * 0.045 * scale
+            bh = h * 0.14 * scale
+            return cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2
+
+        detections: List[Detection] = []
+
+        # Worker 1: drifts through DANGER_ZONE_A with helmet
         wx = 0.55 + 0.16 * math.sin(self._t / 28.0)
         wy = 0.58 + 0.10 * math.cos(self._t / 37.0)
         x, y = norm(wx, wy)
+        x1, y1, x2, y2 = worker_box(x, y)
+        detections.append(Detection("person", 0.94, x1, y1, x2, y2))
+        detections.append(Detection("helmet", 0.91, x1 + w * 0.002, y1 - h * 0.012, x1 + w * 0.042, y1 + h * 0.012))
 
-        detections = [
-            Detection("person", 0.94, x, y, x + w * 0.045, y + h * 0.14),
-            Detection("helmet", 0.91, x + w * 0.002, y - h * 0.012, x + w * 0.042, y + h * 0.012),
-        ]
-        # Second worker in the exclusion zone without helmet (drives PPE alert).
+        # Worker 2: in EXCLUSION_ZONE_B without helmet (drives PPE alert)
         ex, ey = norm(0.17, 0.22 + 0.06 * math.sin(self._t / 23.0))
-        detections.append(
-            Detection("person", 0.88, ex, ey, ex + w * 0.04, ey + h * 0.12)
-        )
+        ex1, ey1, ex2, ey2 = worker_box(ex, ey)
+        detections.append(Detection("person", 0.88, ex1, ey1, ex2, ey2))
+
+        # Worker 3: near center with vest only, no helmet
+        vx, vy = norm(0.50 + 0.08 * math.cos(self._t / 45.0), 0.50 + 0.08 * math.sin(self._t / 41.0))
+        vx1, vy1, vx2, vy2 = worker_box(vx, vy)
+        detections.append(Detection("person", 0.90, vx1, vy1, vx2, vy2))
+        detections.append(Detection("vest", 0.87, vx1 + w * 0.005, vy1 + h * 0.02, vx2 - w * 0.005, vy1 + h * 0.10))
+
+        # Worker 4: compliant worker with helmet + vest
+        cx, cy = norm(0.78 + 0.05 * math.sin(self._t / 33.0), 0.65 + 0.05 * math.cos(self._t / 29.0))
+        cx1, cy1, cx2, cy2 = worker_box(cx, cy)
+        detections.append(Detection("person", 0.92, cx1, cy1, cx2, cy2))
+        detections.append(Detection("helmet", 0.93, cx1 + w * 0.002, cy1 - h * 0.012, cx1 + w * 0.042, cy1 + h * 0.012))
+        detections.append(Detection("vest", 0.89, cx1 + w * 0.003, cy1 + h * 0.02, cx2 - w * 0.003, cy1 + h * 0.10))
+
         self._last_latency = 2.4 + (self._t % 5) * 0.3
         return detections
 

@@ -41,6 +41,7 @@ class EventBroker:
         self._subscribers: Dict[EventType, Set[asyncio.Queue]] = defaultdict(set)
         self._history: Deque[BaseEvent] = deque(maxlen=500)
         self._max_queue = max_queue
+        self._history_lock = asyncio.Lock()
 
     async def subscribe(
         self, event_types: List[EventType] | None = None
@@ -53,6 +54,8 @@ class EventBroker:
         try:
             while True:
                 item = await queue.get()
+                if isinstance(item, _Terminator):
+                    break
                 yield item
         finally:
             for et in types:
@@ -64,7 +67,6 @@ class EventBroker:
         subscribers = list(self._subscribers.get(event.event_type, ()))
         for queue in subscribers:
             if queue.full():
-                # Drop-oldest to protect the edge real-time budget.
                 try:
                     queue.get_nowait()
                 except asyncio.QueueEmpty:
@@ -73,7 +75,8 @@ class EventBroker:
                 queue.put_nowait(event)
             except asyncio.QueueFull:  # pragma: no cover
                 continue
-        self._history.append(event)
+        async with self._history_lock:
+            self._history.append(event)
         event.latency_ms = (time.perf_counter() - started) * 1000.0
 
     def snapshot(self) -> List[BaseEvent]:

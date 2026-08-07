@@ -92,6 +92,25 @@ RTSP URL), and set `vision.inference_backend: yolov8` with `yolov8n.pt`.
 
 Interactive docs: `http://127.0.0.1:8080/docs`
 
+## Training the PPE detector
+
+Train directly on Ultralytics' built-in **Construction-PPE** dataset (1,416
+images, 11 classes: `helmet`, `no_helmet`, `gloves`, `no_gloves`, `vest`,
+`no_vest`, `boots`, `no_boots`, `goggles`, `no_goggle`, `person`). Passing
+`data="construction-ppe.yaml"` makes YOLO **download and extract the dataset
+automatically** on first run — no manual setup.
+
+```bash
+pip install ultralytics
+python scripts/train.py --model yolov8n.pt --epochs 50 --imgsz 640
+# or programmatically:
+python -c "from isip.training import train; train(model='yolov11s.pt', epochs=80)"
+```
+
+Output lands in `runs/ppe/` and can be exported for edge inference
+(`model.export(format='onnx')` / TensorRT), then pointed at via
+`config/config.yaml → vision.model`.
+
 ## Tests
 
 ```bash

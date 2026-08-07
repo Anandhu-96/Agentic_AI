@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -65,12 +66,19 @@ class EdgeOrchestrator:
         self._active_ppe: Set[Tuple[str, str]] = set()
         self._cap = None
         self._tasks: List[asyncio.Task] = []
+        self._shutdown = asyncio.Event()
 
     # ------------------------------------------------------------------ vision
 
+    def _release_capture(self) -> None:
+        if getattr(self, "_cap", None) is not None:
+            try:
+                self._cap.release()
+            except Exception:  # noqa: BLE001
+                pass
+            self._cap = None
+
     def _read_frame(self) -> Any:
-        # Camera off by default: synthetic frames keep the demo hardware-free
-        # and never enable a webcam LED.
         if self.settings.video.synthetic_camera:
             h, w = self.settings.video.height, self.settings.video.width
             return _synthetic_frame(w, h)
@@ -92,21 +100,15 @@ class EdgeOrchestrator:
                 )
             return frame
         except Exception as exc:  # noqa: BLE001
-            if getattr(self, "_cap", None) is not None:
-                try:
-                    self._cap.release()
-                except Exception:  # noqa: BLE001
-                    pass
-                self._cap = None
+            self._release_capture()
             logger.debug("frame fallback: %s", exc)
-            # Synthetic frame: content is ignored by SyntheticDetector.
             h, w = self.settings.video.height, self.settings.video.width
             return _synthetic_frame(w, h)
 
     async def _inference_loop(self) -> None:
         interval = 1.0 / max(1, self.settings.edge.fps_limit)
         frame_idx = 0
-        while True:
+        while not self._shutdown.is_set():
             try:
                 started = time.perf_counter()
                 frame = self._read_frame()
@@ -117,7 +119,7 @@ class EdgeOrchestrator:
                 await self._check_geofences(workers)
                 await self._check_ppe(workers, detections)
 
-                with self.runtime.metrics.lock:
+                async with self.runtime.metrics.lock:
                     self.runtime.metrics.last_latency_ms = elapsed_ms
                     actual_fps = 1000.0 / max(elapsed_ms, 1.0)
                     self.runtime.metrics.last_fps = min(actual_fps, float(self.settings.edge.fps_limit))
@@ -200,7 +202,7 @@ class EdgeOrchestrator:
         if self.runtime.plc.is_locked:
             return
         latency_ms = await self.runtime.plc.trip("HARD")
-        with self.runtime.metrics.lock:
+        async with self.runtime.metrics.lock:
             self.runtime.metrics.is_estop_locked = True
             self.runtime.metrics.alert_count += 1
         event = SafetyEvent(
@@ -280,8 +282,10 @@ class EdgeOrchestrator:
         )
 
     async def _heartbeat_loop(self) -> None:
-        while True:
+        while not self._shutdown.is_set():
             await asyncio.sleep(5.0)
+            if self._shutdown.is_set():
+                break
             await self.runtime.broker.publish(
                 BaseEvent(
                     event_type=EventType.HEARTBEAT,
@@ -294,13 +298,31 @@ class EdgeOrchestrator:
                 )
             )
 
+    def _register_signal_handlers(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, self._shutdown.set)
+        except NotImplementedError:
+            pass
+
+    async def _release_resources(self) -> None:
+        self._release_capture()
+        if self.runtime.plc.is_locked:
+            await self.runtime.plc.release()
+        self.runtime.broker.close()
+        for task in self._tasks:
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+
     # ------------------------------------------------------------------- run
 
     async def run(self, with_api: bool = True) -> None:
+        self._register_signal_handlers()
         self.runtime.video_stream.start()
         if self.runtime.video_stream.error is not None:
             logger.error("video stream failed to start: %s", self.runtime.video_stream.error)
-        tasks = [
+        self._tasks = [
             asyncio.create_task(self._inference_loop(), name="inference"),
             asyncio.create_task(self._telemetry_loop(), name="telemetry"),
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat"),
@@ -311,7 +333,7 @@ class EdgeOrchestrator:
 
             app = create_app(self.runtime)
             cfg = self.settings.api
-            tasks.append(
+            self._tasks.append(
                 asyncio.create_task(
                     uvicorn.Server(
                         uvicorn.Config(
@@ -326,7 +348,10 @@ class EdgeOrchestrator:
             self.settings.vision.backend,
             self.settings.edge.target_latency_ms,
         )
-        await asyncio.gather(*tasks)
+        try:
+            await asyncio.wait(self._tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            await self._release_resources()
 
 
 def _synthetic_frame(w: int, h: int) -> Any:

@@ -117,7 +117,7 @@ class EdgeOrchestrator:
                 await self._check_geofences(workers)
                 await self._check_ppe(workers, detections)
 
-                with self.runtime.metrics.lock:
+                async with self.runtime.metrics.lock:
                     self.runtime.metrics.last_latency_ms = elapsed_ms
                     actual_fps = 1000.0 / max(elapsed_ms, 1.0)
                     self.runtime.metrics.last_fps = min(actual_fps, float(self.settings.edge.fps_limit))
@@ -200,7 +200,7 @@ class EdgeOrchestrator:
         if self.runtime.plc.is_locked:
             return
         latency_ms = await self.runtime.plc.trip("HARD")
-        with self.runtime.metrics.lock:
+        async with self.runtime.metrics.lock:
             self.runtime.metrics.is_estop_locked = True
             self.runtime.metrics.alert_count += 1
         event = SafetyEvent(
@@ -288,7 +288,7 @@ class EdgeOrchestrator:
                     severity=Severity.INFO,
                     payload={
                         "node_id": self.settings.edge.node_id,
-                        "uptime_s": self.runtime.metrics.snapshot()["uptime_s"],
+                        "uptime_s": (await self.runtime.metrics.snapshot())["uptime_s"],
                         "edge_ok": not self.runtime.plc.is_locked,
                     },
                 )

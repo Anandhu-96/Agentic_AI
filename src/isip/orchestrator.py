@@ -68,6 +68,14 @@ class EdgeOrchestrator:
 
     # ------------------------------------------------------------------ vision
 
+    def _release_capture(self) -> None:
+        if getattr(self, "_cap", None) is not None:
+            try:
+                self._cap.release()
+            except Exception:  # noqa: BLE001
+                pass
+            self._cap = None
+
     def _read_frame(self) -> Any:
         # Camera off by default: synthetic frames keep the demo hardware-free
         # and never enable a webcam LED.
@@ -81,10 +89,11 @@ class EdgeOrchestrator:
             if self._cap is None:
                 self._cap = cv2.VideoCapture(self.settings.video.source)
                 if not self._cap.isOpened():
-                    self._cap = None
+                    self._release_capture()
                     raise RuntimeError("camera unavailable")
             ok, frame = self._cap.read()
             if not ok:
+                self._release_capture()
                 raise RuntimeError("empty frame")
             if self.settings.video.width:
                 frame = cv2.resize(
@@ -92,12 +101,7 @@ class EdgeOrchestrator:
                 )
             return frame
         except Exception as exc:  # noqa: BLE001
-            if getattr(self, "_cap", None) is not None:
-                try:
-                    self._cap.release()
-                except Exception:  # noqa: BLE001
-                    pass
-                self._cap = None
+            self._release_capture()
             logger.debug("frame fallback: %s", exc)
             # Synthetic frame: content is ignored by SyntheticDetector.
             h, w = self.settings.video.height, self.settings.video.width

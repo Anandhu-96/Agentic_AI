@@ -297,6 +297,7 @@ class EdgeOrchestrator:
     # ------------------------------------------------------------------- run
 
     async def run(self, with_api: bool = True) -> None:
+        self.runtime.video_stream.start()
         tasks = [
             asyncio.create_task(self._inference_loop(), name="inference"),
             asyncio.create_task(self._telemetry_loop(), name="telemetry"),

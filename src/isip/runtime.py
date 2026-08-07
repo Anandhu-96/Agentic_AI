@@ -48,12 +48,13 @@ class RuntimeMetrics:
 class VideoStreamProducer:
     """Background thread that continuously produces MJPEG frames."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, draw_zones: bool = True) -> None:
         self.settings = settings
         self.vision_cfg = settings.vision
         self.video_cfg = settings.video
         self.detector = build_detector(self.vision_cfg)
         self.geofences = GeofenceEngine.from_yaml(self.vision_cfg.geofences_file)
+        self._draw_zones = draw_zones
         self._queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=20)
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -144,34 +145,35 @@ class VideoStreamProducer:
                             cv2.putText(frame, label, (x1 + 3, y1 - 4),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
 
-                        for zone in self.geofences.zones.values():
-                            pts = np.array(zone.polygon, dtype=np.float32)
-                            pts[:, 0] *= w
-                            pts[:, 1] *= h
-                            pts = pts.astype(int)
-                            if len(pts) < 3:
-                                continue
-                            is_active = zone.name in active_zones
-                            base_color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
-                            line_thickness = 2 if is_active else 1
-                            cv2.polylines(frame, [pts], isClosed=True, color=base_color,
-                                          thickness=line_thickness, lineType=cv2.LINE_AA)
-                            for i, (px, py) in enumerate(pts):
-                                radius = 4 if is_active else 3
-                                cv2.circle(frame, (int(px), int(py)), radius, base_color, -1, lineType=cv2.LINE_AA)
-                                cv2.circle(frame, (int(px), int(py)), radius + 2, (255, 255, 255), 1, lineType=cv2.LINE_AA)
-                            label_y = max(16, int(pts[:, 1].min()) - 8)
-                            label_text = f"{zone.name} [ACTIVE]" if is_active else zone.name
-                            (tw, th), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-                            cv2.rectangle(frame, (int(pts[:, 0].min()), label_y - th - 4),
-                                          (int(pts[:, 0].min()) + tw + 6, label_y + 4), (0, 0, 0), -1)
-                            cv2.putText(frame, label_text, (int(pts[:, 0].min()) + 3, label_y),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, base_color if is_active else (200, 200, 200), 1)
+                        if self._draw_zones:
+                            for zone in self.geofences.zones.values():
+                                pts = np.array(zone.polygon, dtype=np.float32)
+                                pts[:, 0] *= w
+                                pts[:, 1] *= h
+                                pts = pts.astype(int)
+                                if len(pts) < 3:
+                                    continue
+                                is_active = zone.name in active_zones
+                                base_color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
+                                line_thickness = 2 if is_active else 1
+                                cv2.polylines(frame, [pts], isClosed=True, color=base_color,
+                                              thickness=line_thickness, lineType=cv2.LINE_AA)
+                                for i, (px, py) in enumerate(pts):
+                                    radius = 4 if is_active else 3
+                                    cv2.circle(frame, (int(px), int(py)), radius, base_color, -1, lineType=cv2.LINE_AA)
+                                    cv2.circle(frame, (int(px), int(py)), radius + 2, (255, 255, 255), 1, lineType=cv2.LINE_AA)
+                                label_y = max(16, int(pts[:, 1].min()) - 8)
+                                label_text = f"{zone.name} [ACTIVE]" if is_active else zone.name
+                                (tw, th), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+                                cv2.rectangle(frame, (int(pts[:, 0].min()), label_y - th - 4),
+                                              (int(pts[:, 0].min()) + tw + 6, label_y + 4), (0, 0, 0), -1)
+                                cv2.putText(frame, label_text, (int(pts[:, 0].min()) + 3, label_y),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, base_color if is_active else (200, 200, 200), 1)
 
-                        if active_zones:
-                            banner = f"ZONE BREACH: {', '.join(sorted(active_zones))}"
-                            cv2.rectangle(frame, (0, 0), (w, 32), (0, 0, 180), -1)
-                            cv2.putText(frame, banner, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                            if active_zones:
+                                banner = f"ZONE BREACH: {', '.join(sorted(active_zones))}"
+                                cv2.rectangle(frame, (0, 0), (w, 32), (0, 0, 180), -1)
+                                cv2.putText(frame, banner, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
                         cv2.putText(frame, f"FPS: {1000.0/max(elapsed_ms,1.0):.1f} | Latency: {elapsed_ms:.1f}ms",
                                     (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
@@ -214,4 +216,5 @@ class EdgeRuntime:
             use_gpio=settings.control.use_gpio,
             trip_delay_ms=settings.control.trip_delay_ms,
         )
-        self.video_stream = VideoStreamProducer(settings)
+        self.video_stream = VideoStreamProducer(settings, draw_zones=True)
+        self.detection_stream = VideoStreamProducer(settings, draw_zones=False)

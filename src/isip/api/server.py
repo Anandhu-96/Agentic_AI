@@ -156,6 +156,27 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
         )
 
+    @app.get(f"{prefix}/video-feed/detections", tags=["edge"])
+    async def video_feed_detections() -> Response:
+        producer = runtime.detection_stream
+
+        def gen_frames():
+            while True:
+                frame_bytes = producer.get_frame(timeout=1.0)
+                if frame_bytes is None:
+                    continue
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(frame_bytes)).encode() + b"\r\n\r\n"
+                ) + frame_bytes + b"\r\n"
+
+        return StreamingResponse(
+            gen_frames(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+
     @app.get(f"{prefix}/stream", tags=["edge"])
     async def event_stream() -> Response:
         async def gen_events():

@@ -156,6 +156,84 @@ def rul_gauge(health_pct: float) -> go.Figure:
     return fig
 
 
+def render_zone_status(events: List[Dict]) -> None:
+    zone_events = [
+        e for e in events
+        if e.get("event_type") in ("ZONE_INTRUSION", "ZONE_CLEARED") and "payload" in e
+    ]
+    active_zones = {}
+    for e in zone_events:
+        payload = e.get("payload", {})
+        zone_name = payload.get("zone", "UNKNOWN")
+        event_type = e.get("event_type")
+        if event_type == "ZONE_INTRUSION":
+            active_zones[zone_name] = {
+                "status": "ACTIVE",
+                "severity": "CRITICAL" if e.get("severity") == "CRITICAL" else "WARNING",
+                "description": payload.get("description", ""),
+            }
+        elif event_type == "ZONE_CLEARED" and zone_name in active_zones:
+            del active_zones[zone_name]
+
+    if not active_zones:
+        st.success("All zones clear — no active intrusions")
+        return
+
+    for zone_name, info in active_zones.items():
+        severity_color = "🔴" if info["severity"] == "CRITICAL" else "🟡"
+        st.error(
+            f"{severity_color} **{zone_name}** — {info['status']}  \n"
+            f"{info['description']}"
+        )
+
+
+def render_critical_alerts(events: List[Dict]) -> None:
+    critical_events = [
+        e for e in events
+        if e.get("severity") == "CRITICAL" and "payload" in e
+    ]
+    if not critical_events:
+        return
+
+    st.markdown("---")
+    st.subheader("🚨 Critical Alerts")
+    for e in critical_events[-10:]:
+        payload = e.get("payload", {})
+        event_type = e.get("event_type", "UNKNOWN")
+        latency = e.get("latency_ms", 0)
+        timestamp = pd.to_datetime(e.get("timestamp", 0), unit="s").strftime("%H:%M:%S")
+
+        if event_type == "RELAY_TRIP":
+            st.error(
+                f"**{timestamp}** — RELAY TRIPPED | "
+                f"Reason: `{payload.get('reason', 'unknown')}` | "
+                f"Latency: {latency:.1f}ms"
+            )
+        elif event_type == "ZONE_INTRUSION":
+            st.error(
+                f"**{timestamp}** — ZONE BREACH | "
+                f"Zone: `{payload.get('zone', 'UNKNOWN')}` | "
+                f"Confidence: {payload.get('confidence', 0):.2f}"
+            )
+        elif event_type == "THERMAL_ANOMALY":
+            st.error(
+                f"**{timestamp}** — THERMAL ANOMALY | "
+                f"Sensor: `{payload.get('sensor_id', 'UNKNOWN')}` | "
+                f"Value: {payload.get('value', 0):.1f}{payload.get('unit', '')}"
+            )
+        elif event_type == "E_STOP_TRIGGERED":
+            st.error(
+                f"**{timestamp}** — E-STOP TRIGGERED | "
+                f"Mode: `{payload.get('mode', 'UNKNOWN')}` | "
+                f"Relay: {payload.get('relay', 'UNKNOWN')}"
+            )
+        else:
+            st.error(
+                f"**{timestamp}** — {event_type} | "
+                f"Payload: `{str(payload)[:120]}`"
+            )
+
+
 _SSE_HTML = """
 <div id="isip-sse-root" style="width:100%;height:500px;border-radius:8px;overflow:hidden;background:#0b1118;position:relative;">
   <img id="isip-video" src="{video_url}" style="width:100%;height:100%;object-fit:contain;display:block;" />
@@ -232,11 +310,26 @@ def main() -> None:
     render_kpis(metrics)
     render_system_check(metrics)
 
-    # Telemetry + RUL
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.subheader("IIoT Telemetry — Live")
-        events = api_get("/events?limit=200") or []
+    events = api_get("/events?limit=200") or []
+
+    # Critical Alerts Section
+    render_critical_alerts(events)
+
+    # Detection Video + Zone Status
+    col_video, col_zone = st.columns([3, 1])
+    with col_video:
+        st.subheader("🎥 Detection Feed — YOLO Inference")
+        st.components.v1.html(
+            '<iframe src="http://127.0.0.1:8080/edge/video-feed/detections" width="100%" height="480" style="border:none; border-radius:8px;" allow="autoplay"></iframe>',
+            height=500,
+        )
+
+    with col_zone:
+        st.subheader("🗺️ Zone Intrusion Status")
+        render_zone_status(events)
+
+        st.divider()
+        st.subheader("📊 IIoT Telemetry — Live")
         samples = [
             e["payload"]
             for e in events
@@ -247,7 +340,9 @@ def main() -> None:
         samples = samples[-MAX_POINTS:]
         st.plotly_chart(build_telemetry_chart(samples), use_container_width=True)
 
-    with col2:
+    # RUL + Safety Events
+    col_rul, col_events = st.columns([1, 2])
+    with col_rul:
         st.subheader("RUL Estimation")
         rul_events = [
             e["payload"]
@@ -260,28 +355,21 @@ def main() -> None:
             last = rul_events[-1]
             st.metric("Remaining Life", f"{last.get('remaining_hours', 0):,.0f} h")
 
-    st.divider()
-    st.subheader("Live Detection Video Feed")
-    st.components.v1.html(
-        '<iframe src="http://127.0.0.1:8080/edge/video-feed" width="100%" height="480" style="border:none; border-radius:8px;" allow="autoplay"></iframe>',
-        height=500,
-    )
-
-    st.divider()
-    st.subheader("Safety Events")
-    rows = [
-        {
-            "time": pd.to_datetime(e.get("timestamp", 0), unit="s").strftime("%H:%M:%S"),
-            "event_type": e.get("event_type"),
-            "severity": e.get("severity"),
-            "latency_ms": e.get("latency_ms"),
-        }
-        for e in events[:50]
-    ]
-    if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, height=260)
-    else:
-        st.info("No events yet — start the edge orchestrator.")
+    with col_events:
+        st.subheader("Safety Events")
+        rows = [
+            {
+                "time": pd.to_datetime(e.get("timestamp", 0), unit="s").strftime("%H:%M:%S"),
+                "event_type": e.get("event_type"),
+                "severity": e.get("severity"),
+                "latency_ms": e.get("latency_ms"),
+            }
+            for e in events[:50]
+        ]
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, height=260)
+        else:
+            st.info("No events yet — start the edge orchestrator.")
 
 
 if __name__ == "__main__":

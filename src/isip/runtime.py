@@ -90,8 +90,10 @@ class VideoStreamProducer:
                 if not cap.isOpened():
                     cap = None
 
-            target_fps = max(1, int(getattr(self.settings.edge, "fps_limit", 8)))
+            target_fps = max(1, int(getattr(self.settings.edge, "fps_limit", 4)))
             interval = 1.0 / target_fps
+            last_inference = 0.0
+            inference_interval = 1.0 / max(1, target_fps - 1)
 
             while self._running:
                 try:
@@ -106,78 +108,78 @@ class VideoStreamProducer:
                     else:
                         frame = np.zeros((self.video_cfg.height, self.video_cfg.width, 3), dtype=np.uint8)
 
-                    started = time.perf_counter()
-                    detections = self.detector.detect(frame)
-                    elapsed_ms = (time.perf_counter() - started) * 1000.0
+                    now = time.perf_counter()
+                    if now - last_inference >= inference_interval:
+                        last_inference = now
+                        started = time.perf_counter()
+                        detections = self.detector.detect(frame)
+                        elapsed_ms = (time.perf_counter() - started) * 1000.0
 
-                    workers = [d for d in detections if d.class_name == "person"]
-                    violations = evaluate_ppe(workers, detections, self.vision_cfg)
+                        workers = [d for d in detections if d.class_name == "person"]
+                        violations = evaluate_ppe(workers, detections, self.vision_cfg)
 
-                    h, w = frame.shape[:2]
-                    workers = [d for d in detections if d.class_name == "person"]
-                    violations = evaluate_ppe(workers, detections, self.vision_cfg)
-                    active_zones = set()
-                    for worker in workers:
-                        wx, wy = worker.bbox_center
-                        zone = self.geofences.locate((wx / w, wy / h))
-                        if zone is not None:
-                            active_zones.add(zone.name)
-                    for zone in self.geofences.zones.values():
-                        pts = np.array(zone.polygon, dtype=np.float32)
-                        pts[:, 0] *= w
-                        pts[:, 1] *= h
-                        pts = pts.astype(int)
-                        if len(pts) >= 3:
-                            is_active = zone.name in active_zones
-                            base_color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
-                            overlay = frame.copy()
-                            fill_alpha = 0.35 if is_active else 0.15
-                            cv2.fillPoly(overlay, [pts], color=base_color)
-                            cv2.addWeighted(overlay, fill_alpha, frame, 1.0 - fill_alpha, 0, frame)
-                            line_thickness = 4 if is_active else 2
-                            cv2.polylines(frame, [pts], isClosed=True, color=base_color, thickness=line_thickness)
-                            for i, (px, py) in enumerate(pts):
-                                radius = 6 if is_active else 4
-                                cv2.circle(frame, (int(px), int(py)), radius, base_color, -1)
-                                cv2.circle(frame, (int(px), int(py)), radius + 3, (255, 255, 255), 2)
-                            label_y = max(14, int(pts[:, 1].min()) - 10)
-                            if is_active:
-                                cv2.putText(frame, f"{zone.name} [ACTIVE]", (int(pts[:, 0].min()), label_y),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 3)
-                            else:
-                                cv2.putText(frame, zone.name, (int(pts[:, 0].min()), label_y),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, base_color, 2)
+                        h, w = frame.shape[:2]
+                        active_zones = set()
+                        for worker in workers:
+                            wx, wy = worker.bbox_center
+                            zone = self.geofences.locate((wx / w, wy / h))
+                            if zone is not None:
+                                active_zones.add(zone.name)
+                        for zone in self.geofences.zones.values():
+                            pts = np.array(zone.polygon, dtype=np.float32)
+                            pts[:, 0] *= w
+                            pts[:, 1] *= h
+                            pts = pts.astype(int)
+                            if len(pts) >= 3:
+                                is_active = zone.name in active_zones
+                                base_color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
+                                overlay = frame.copy()
+                                fill_alpha = 0.35 if is_active else 0.15
+                                cv2.fillPoly(overlay, [pts], color=base_color)
+                                cv2.addWeighted(overlay, fill_alpha, frame, 1.0 - fill_alpha, 0, frame)
+                                line_thickness = 4 if is_active else 2
+                                cv2.polylines(frame, [pts], isClosed=True, color=base_color, thickness=line_thickness)
+                                for i, (px, py) in enumerate(pts):
+                                    radius = 6 if is_active else 4
+                                    cv2.circle(frame, (int(px), int(py)), radius, base_color, -1)
+                                    cv2.circle(frame, (int(px), int(py)), radius + 3, (255, 255, 255), 2)
+                                label_y = max(14, int(pts[:, 1].min()) - 10)
+                                if is_active:
+                                    cv2.putText(frame, f"{zone.name} [ACTIVE]", (int(pts[:, 0].min()), label_y),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 3)
+                                else:
+                                    cv2.putText(frame, zone.name, (int(pts[:, 0].min()), label_y),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, base_color, 2)
 
-                    for det in detections:
-                        x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
-                        color = (40, 180, 40)
-                        if det.class_name == "person":
-                            worker_label = f"W-{int(det.bbox_center[0] * 1000)}"
-                            has_violation = any(v[0] == worker_label for v in violations)
-                            color = (40, 40, 180) if has_violation else (40, 180, 40)
-                        elif det.class_name == "helmet":
-                            color = (180, 180, 40)
-                        elif det.class_name == "vest":
-                            color = (180, 40, 180)
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                        label = f"{det.class_name} ({det.confidence:.2f})"
-                        cv2.putText(frame, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                        for det in detections:
+                            x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
+                            color = (40, 180, 40)
+                            if det.class_name == "person":
+                                worker_label = f"W-{int(det.bbox_center[0] * 1000)}"
+                                has_violation = any(v[0] == worker_label for v in violations)
+                                color = (40, 40, 180) if has_violation else (40, 180, 40)
+                            elif det.class_name == "helmet":
+                                color = (180, 180, 40)
+                            elif det.class_name == "vest":
+                                color = (180, 40, 180)
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                            label = f"{det.class_name} ({det.confidence:.2f})"
+                            cv2.putText(frame, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-                    cv2.putText(frame, f"FPS: {1000.0/max(elapsed_ms,1.0):.1f} | Latency: {elapsed_ms:.1f}ms",
+                    cv2.putText(frame, f"FPS: {target_fps} | Latency: {elapsed_ms:.1f}ms",
                                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-                    ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     if ret:
                         frame_bytes = buf.tobytes()
-                        while not self._queue.full():
+                        try:
+                            self._queue.put_nowait(frame_bytes)
+                        except queue.Full:
                             try:
+                                self._queue.get_nowait()
                                 self._queue.put_nowait(frame_bytes)
-                                break
-                            except queue.Full:
-                                try:
-                                    self._queue.get_nowait()
-                                except queue.Empty:
-                                    pass
+                            except queue.Empty:
+                                pass
 
                     elapsed = time.perf_counter() - frame_start
                     time.sleep(max(0.0, interval - elapsed))

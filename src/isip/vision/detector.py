@@ -140,8 +140,8 @@ class SyntheticDetector(ObjectDetector):
         detections.append(Detection("person", 0.94, x1, y1, x2, y2))
         detections.append(Detection("helmet", 0.91, x1 + w * 0.002, y1 - h * 0.012, x1 + w * 0.042, y1 + h * 0.012))
 
-        # Worker 2: in EXCLUSION_ZONE_B without helmet (drives PPE alert)
-        ex, ey = norm(0.17, 0.22 + 0.06 * math.sin(self._t / 23.0))
+        # Worker 2: moves in and out of EXCLUSION_ZONE_B without helmet
+        ex, ey = norm(0.17, 0.05 + 0.25 * (0.5 + 0.5 * math.sin(self._t / 23.0)))
         ex1, ey1, ex2, ey2 = worker_box(ex, ey)
         detections.append(Detection("person", 0.88, ex1, ey1, ex2, ey2))
 

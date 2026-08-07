@@ -6,6 +6,7 @@ surface so operators and the Streamlit dashboard can act on the system.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import List, Optional
 
@@ -153,6 +154,24 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
             gen_frames(),
             media_type="multipart/x-mixed-replace; boundary=frame",
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+
+    @app.get(f"{prefix}/stream", tags=["edge"])
+    async def event_stream() -> Response:
+        async def gen_events():
+            async for event in runtime.broker.subscribe():
+                payload = event.model_dump(mode="json")
+                payload.pop("latency_ms", None)
+                yield f"data: {json.dumps(payload)}\n\n"
+
+        return StreamingResponse(
+            gen_events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     return app

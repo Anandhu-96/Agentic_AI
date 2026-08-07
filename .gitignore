@@ -1,0 +1,39 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Runtime artifacts
+data/
+logs/
+*.jsonl
+*.log
+*.db
+*.sqlite3
+
+# ML weights
+*.pt
+*.onnx
+*.engine
+*.trt
+
+# Media
+*.mp4
+*.avi
+*.mkv
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,21 @@
+# Restricted zone definitions for point-in-polygon geofencing.
+# Coordinates are normalized (0..1) relative to the frame width/height.
+zones:
+  DANGER_ZONE_A:
+    description: "High-voltage switchyard - no entry without work permit"
+    severity: "CRITICAL"
+    polygon:
+      - [0.40, 0.40]
+      - [0.70, 0.40]
+      - [0.70, 0.75]
+      - [0.40, 0.75]
+    action: "TRIP_RELAY"
+  EXCLUSION_ZONE_B:
+    description: "Robotic arm cell - hard hat and vest required"
+    severity: "WARNING"
+    polygon:
+      - [0.05, 0.10]
+      - [0.30, 0.10]
+      - [0.30, 0.35]
+      - [0.05, 0.35]
+    action: "ALERT_ONLY"

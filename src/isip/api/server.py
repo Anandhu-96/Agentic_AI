@@ -1,0 +1,135 @@
+"""FastAPI control-plane server.
+
+Exposes the edge node's health, metrics, audit trail, and the E-Stop control
+surface so operators and the Streamlit dashboard can act on the system.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import List, Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from ..events.schemas import (
+    AuditEntry,
+    BaseEvent,
+    EStopEvent,
+    EventType,
+    Severity,
+)
+from ..runtime import EdgeRuntime
+
+logger = logging.getLogger(__name__)
+
+
+class EStopRequest(BaseModel):
+    mode: str = Field(default="HARD", pattern="^(HARD|SOFT)$")
+
+
+class EdgeStatus(BaseModel):
+    node_id: str
+    online: bool
+    latency_ms: float
+    fps: float
+    alerts: int
+    estop_locked: bool
+    uptime_s: float
+
+
+def create_app(runtime: EdgeRuntime) -> FastAPI:
+    app = FastAPI(
+        title="Industrial Safety Intelligence Platform",
+        version="0.1.0",
+        description="Edge-first multi-modal safety AI control plane.",
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    prefix = runtime.settings.api.edge_prefix
+
+    @app.get(f"{prefix}/health", tags=["edge"])
+    def health() -> EdgeStatus:
+        return EdgeStatus(
+            node_id=runtime.settings.edge.node_id,
+            online=True,
+            latency_ms=runtime.metrics.last_latency_ms,
+            fps=runtime.metrics.last_fps,
+            alerts=runtime.metrics.alert_count,
+            estop_locked=runtime.plc.is_locked,
+            uptime_s=runtime.metrics.snapshot()["uptime_s"],
+        )
+
+    @app.get(f"{prefix}/metrics", tags=["edge"])
+    def metrics() -> dict:
+        m = runtime.metrics.snapshot()
+        m["node_id"] = runtime.settings.edge.node_id
+        return m
+
+    @app.get(f"{prefix}/events", tags=["edge"])
+    def events(limit: int = Query(default=50, ge=1, le=500)) -> List[BaseEvent]:
+        return runtime.broker.snapshot()[-limit:][::-1]
+
+    @app.get(f"{prefix}/audit", tags=["edge"])
+    def audit(limit: int = Query(default=100, ge=1, le=1000)) -> List[dict]:
+        return runtime.audit.latest(limit)
+
+    @app.post(f"{prefix}/trigger-estop", tags=["control"])
+    async def trigger_estop(req: EStopRequest) -> dict:
+        latency_ms = runtime.plc.trip(req.mode)
+        with runtime.metrics.lock:
+            runtime.metrics.is_estop_locked = True
+            runtime.metrics.alert_count += 1
+        event = EStopEvent(
+            event_type=EventType.E_STOP_TRIGGERED,
+            severity=Severity.CRITICAL,
+            latency_ms=latency_ms,
+            relay=runtime.plc.relay_channel,
+            mode=req.mode,
+            line_id=runtime.plc.line_id,
+        )
+        await runtime.broker.publish(event)
+        runtime.audit.record(
+            AuditEntry(
+                event_type=event.event_type,
+                severity=event.severity,
+                latency_ms=latency_ms,
+                node_id=runtime.settings.edge.node_id,
+            )
+        )
+        return {"status": "TRIPPED", "latency_ms": latency_ms, "relay": runtime.plc.relay_channel}
+
+    @app.post(f"{prefix}/release-estop", tags=["control"])
+    async def release_estop() -> dict:
+        if not runtime.plc.is_locked:
+            raise HTTPException(status_code=409, detail="E-Stop not locked")
+        runtime.plc.release()
+        with runtime.metrics.lock:
+            runtime.metrics.is_estop_locked = False
+        event = EStopEvent(
+            event_type=EventType.E_STOP_RELEASE,
+            severity=Severity.INFO,
+            relay=runtime.plc.relay_channel,
+        )
+        await runtime.broker.publish(event)
+        runtime.audit.record(
+            AuditEntry(
+                event_type=event.event_type,
+                severity=event.severity,
+                latency_ms=0.0,
+                node_id=runtime.settings.edge.node_id,
+            )
+        )
+        return {"status": "RELEASED"}
+
+    @app.get(f"{prefix}/config", tags=["edge"])
+    def config() -> dict:
+        return runtime.settings.model_dump()
+
+    return app

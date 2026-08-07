@@ -1,0 +1,77 @@
+edge:
+  node_id: "edge-node-01"
+  hardware: "nvidia-jetson-orin-nano"
+  inference_backend: "yolov8"          # yolov8 | synthetic
+  target_latency_ms: 20
+  fps_limit: 30
+
+video:
+  source: 0                             # camera index, video path, or rtsp:// URL
+  width: 1280
+  height: 720
+  save_output: false
+  output_dir: "data/output"
+
+vision:
+  model: "yolov8n.pt"
+  conf_threshold: 0.45
+  iou_threshold: 0.5
+  classes:
+    - person
+    - helmet
+  ppe_required: ["helmet", "vest"]
+  ppe_rules:
+    "no-helmet":
+      missing: ["helmet"]
+      severity: "CRITICAL"
+    "no-vest":
+      missing: ["vest"]
+      severity: "WARNING"
+  geofences_file: "config/geofences.yaml"
+
+iiot:
+  sensor_ids:
+    - "TMP_BRG_02"
+    - "VIB_MTR_01"
+    - "GAS_CO_03"
+  sampling_interval_s: 1.0
+  protocol: "mqtt"                      # mqtt | modbus | emulated
+  broker_host: "127.0.0.1"
+  broker_port: 1883
+  modbus_unit: 1
+  thresholds:
+    TMP_BRG_02:
+      warn: 85.0
+      critical: 95.0
+    VIB_MTR_01:
+      warn: 55.0
+      critical: 70.0
+    GAS_CO_03:
+      warn: 25.0
+      critical: 50.0
+
+rul:
+  nominal_temp_c: 60.0
+  activation_temp_c: 70.0
+  max_rated_life_h: 100000.0
+
+control:
+  estop_gpio: 17
+  relay_channel: "GPIO-3"
+  line_id: "LINE_01"
+  trip_delay_ms: 0
+  use_gpio: false                        # true only on real Jetson/Pi hardware
+
+api:
+  host: "0.0.0.0"
+  port: 8080
+  edge_prefix: "/edge"
+
+dashboard:
+  host: "127.0.0.1"
+  port: 8501
+  refresh_ms: 500
+
+logging:
+  audit_dir: "logs"
+  level: "INFO"

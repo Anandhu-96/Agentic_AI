@@ -40,6 +40,13 @@ ANOMALY_EVENT = {
     "co_ppm": EventType.GAS_ANOMALY,
 }
 
+_STATUS_SEVERITY = {
+    "NORMAL": Severity.INFO,
+    "HEALTHY": Severity.INFO,
+    "WARN": Severity.WARNING,
+    "CRITICAL": Severity.CRITICAL,
+}
+
 
 class EdgeOrchestrator:
     def __init__(self, settings: Settings) -> None:
@@ -199,7 +206,7 @@ class EdgeOrchestrator:
             await self.runtime.broker.publish(
                 BaseEvent(
                     event_type=EventType.TELEMETRY,
-                    severity=Severity(sample.status),
+                    severity=_STATUS_SEVERITY.get(sample.status, Severity.INFO),
                     payload=sample.model_dump(),
                 )
             )
@@ -232,7 +239,7 @@ class EdgeOrchestrator:
                 await self.runtime.broker.publish(
                     BaseEvent(
                         event_type=EventType.RUL_UPDATE,
-                        severity=Severity(rul_state.status),
+                        severity=_STATUS_SEVERITY.get(rul_state.status, Severity.INFO),
                         payload=rul_state.__dict__,
                     )
                 )

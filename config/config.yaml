@@ -11,11 +11,11 @@ video:
   height: 720
   save_output: false
   output_dir: "data/output"
-  synthetic_camera: false
+  synthetic_camera: true
 
 vision:
   model: "yolov8n.pt"
-  backend: "yolov8"                  # synthetic (zero-hardware demo) | yolov8
+  backend: "synthetic"                  # synthetic (zero-hardware demo) | yolov8
   conf_threshold: 0.45
   iou_threshold: 0.5
   device: "cpu"

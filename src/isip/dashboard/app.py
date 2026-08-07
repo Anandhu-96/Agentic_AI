@@ -371,6 +371,13 @@ def main() -> None:
         else:
             st.info("No events yet — start the edge orchestrator.")
 
+    st.divider()
+    st.subheader("Live Detection Video Feed")
+    st.components.v1.html(
+        '<iframe src="http://127.0.0.1:8080/edge/video-feed" width="100%" height="100%" style="border:none; border-radius:8px; object-fit:contain;" allow="autoplay"></iframe>',
+        height=520,
+    )
+
 
 if __name__ == "__main__":
     main()

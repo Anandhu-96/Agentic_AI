@@ -305,8 +305,6 @@ class EdgeOrchestrator:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, self._shutdown.set)
         except NotImplementedError:
-            # Windows does not support add_signal_handler; fall back to
-            # KeyboardInterrupt handling in the outer runner.
             pass
 
     async def _release_resources(self) -> None:

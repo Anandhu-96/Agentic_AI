@@ -158,7 +158,7 @@ class SyntheticDetector(ObjectDetector):
         detections.append(Detection("helmet", 0.93, cx1 + w * 0.002, cy1 - h * 0.012, cx1 + w * 0.042, cy1 + h * 0.012))
         detections.append(Detection("vest", 0.89, cx1 + w * 0.003, cy1 + h * 0.02, cx2 - w * 0.003, cy1 + h * 0.10))
 
-        self._last_latency = 2.4 + (self._t % 5) * 0.3
+        self._last_latency = (time.perf_counter() - started) * 1000.0
         return detections
 
     @property

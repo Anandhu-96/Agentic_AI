@@ -125,31 +125,6 @@ class VideoStreamProducer:
                             zone = self.geofences.locate((wx / w, wy / h))
                             if zone is not None:
                                 active_zones.add(zone.name)
-                        for zone in self.geofences.zones.values():
-                            pts = np.array(zone.polygon, dtype=np.float32)
-                            pts[:, 0] *= w
-                            pts[:, 1] *= h
-                            pts = pts.astype(int)
-                            if len(pts) >= 3:
-                                is_active = zone.name in active_zones
-                                base_color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
-                                overlay = frame.copy()
-                                fill_alpha = 0.35 if is_active else 0.15
-                                cv2.fillPoly(overlay, [pts], color=base_color)
-                                cv2.addWeighted(overlay, fill_alpha, frame, 1.0 - fill_alpha, 0, frame)
-                                line_thickness = 4 if is_active else 2
-                                cv2.polylines(frame, [pts], isClosed=True, color=base_color, thickness=line_thickness)
-                                for i, (px, py) in enumerate(pts):
-                                    radius = 6 if is_active else 4
-                                    cv2.circle(frame, (int(px), int(py)), radius, base_color, -1)
-                                    cv2.circle(frame, (int(px), int(py)), radius + 3, (255, 255, 255), 2)
-                                label_y = max(14, int(pts[:, 1].min()) - 10)
-                                if is_active:
-                                    cv2.putText(frame, f"{zone.name} [ACTIVE]", (int(pts[:, 0].min()), label_y),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 3)
-                                else:
-                                    cv2.putText(frame, zone.name, (int(pts[:, 0].min()), label_y),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, base_color, 2)
 
                         for det in detections:
                             x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
@@ -162,12 +137,44 @@ class VideoStreamProducer:
                                 color = (180, 180, 40)
                             elif det.class_name == "vest":
                                 color = (180, 40, 180)
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
                             label = f"{det.class_name} ({det.confidence:.2f})"
-                            cv2.putText(frame, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                            (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
+                            cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 6, y1), color, -1)
+                            cv2.putText(frame, label, (x1 + 3, y1 - 4),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
 
-                    cv2.putText(frame, f"FPS: {target_fps} | Latency: {elapsed_ms:.1f}ms",
-                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                        for zone in self.geofences.zones.values():
+                            pts = np.array(zone.polygon, dtype=np.float32)
+                            pts[:, 0] *= w
+                            pts[:, 1] *= h
+                            pts = pts.astype(int)
+                            if len(pts) < 3:
+                                continue
+                            is_active = zone.name in active_zones
+                            base_color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
+                            line_thickness = 2 if is_active else 1
+                            cv2.polylines(frame, [pts], isClosed=True, color=base_color,
+                                          thickness=line_thickness, lineType=cv2.LINE_AA)
+                            for i, (px, py) in enumerate(pts):
+                                radius = 4 if is_active else 3
+                                cv2.circle(frame, (int(px), int(py)), radius, base_color, -1, lineType=cv2.LINE_AA)
+                                cv2.circle(frame, (int(px), int(py)), radius + 2, (255, 255, 255), 1, lineType=cv2.LINE_AA)
+                            label_y = max(16, int(pts[:, 1].min()) - 8)
+                            label_text = f"{zone.name} [ACTIVE]" if is_active else zone.name
+                            (tw, th), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+                            cv2.rectangle(frame, (int(pts[:, 0].min()), label_y - th - 4),
+                                          (int(pts[:, 0].min()) + tw + 6, label_y + 4), (0, 0, 0), -1)
+                            cv2.putText(frame, label_text, (int(pts[:, 0].min()) + 3, label_y),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, base_color if is_active else (200, 200, 200), 1)
+
+                        if active_zones:
+                            banner = f"ZONE BREACH: {', '.join(sorted(active_zones))}"
+                            cv2.rectangle(frame, (0, 0), (w, 32), (0, 0, 180), -1)
+                            cv2.putText(frame, banner, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+                        cv2.putText(frame, f"FPS: {1000.0/max(elapsed_ms,1.0):.1f} | Latency: {elapsed_ms:.1f}ms",
+                                    (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
                     ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     if ret:

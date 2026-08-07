@@ -11,6 +11,7 @@ video:
   height: 720
   save_output: false
   output_dir: "data/output"
+  synthetic_camera: true                # true = never touch the camera (demo)
 
 vision:
   model: "yolov8n.pt"

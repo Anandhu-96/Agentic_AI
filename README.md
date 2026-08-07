@@ -73,8 +73,10 @@ Or launch everything with `scripts/run_all.sh` (Linux/macOS) or
 The edge node runs with **zero hardware**: the synthetic detector and emulated
 sensors drive the full pipeline so geofencing, PPE violations, thermal
 anomalies, RUL updates, and relay trips can all be demonstrated immediately.
-Point a camera at `config/config.yaml → video.source` or set
-`vision.inference_backend: yolov8` with `yolov8n.pt` to use real YOLOv8.
+The camera is **never enabled** by default (`config/config.yaml →
+`video.synthetic_camera: true`). To use a real webcam/video feed, set
+`video.synthetic_camera: false` and `video.source` (camera index, file, or
+RTSP URL), and set `vision.inference_backend: yolov8` with `yolov8n.pt`.
 
 ## REST API
 

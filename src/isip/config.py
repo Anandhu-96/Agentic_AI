@@ -15,6 +15,7 @@ class VideoConfig(BaseModel):
     height: int = 720
     save_output: bool = False
     output_dir: str = "data/output"
+    synthetic_camera: bool = True
 
 
 class VisionConfig(BaseModel):

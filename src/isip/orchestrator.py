@@ -66,6 +66,11 @@ class EdgeOrchestrator:
     # ------------------------------------------------------------------ vision
 
     def _read_frame(self) -> Any:
+        # Camera off by default: synthetic frames keep the demo hardware-free
+        # and never enable a webcam LED.
+        if self.settings.video.synthetic_camera:
+            h, w = self.settings.video.height, self.settings.video.width
+            return _synthetic_frame(w, h)
         try:
             import cv2
             import numpy as np

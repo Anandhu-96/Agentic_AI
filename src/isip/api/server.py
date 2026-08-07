@@ -58,7 +58,7 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
 
     @app.get(f"{prefix}/health", tags=["edge"])
     async def health() -> EdgeStatus:
-        snapshot = await runtime.metrics.snapshot()
+        snapshot = runtime.metrics.snapshot()
         return EdgeStatus(
             node_id=runtime.settings.edge.node_id,
             online=True,
@@ -71,7 +71,7 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
 
     @app.get(f"{prefix}/metrics", tags=["edge"])
     async def metrics() -> dict:
-        m = await runtime.metrics.snapshot()
+        m = runtime.metrics.snapshot()
         m["node_id"] = runtime.settings.edge.node_id
         return m
 
@@ -86,7 +86,7 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
     @app.post(f"{prefix}/trigger-estop", tags=["control"])
     async def trigger_estop(req: EStopRequest) -> dict:
         latency_ms = await runtime.plc.trip(req.mode)
-        async with runtime.metrics.lock:
+        with runtime.metrics.lock:
             runtime.metrics.is_estop_locked = True
             runtime.metrics.alert_count += 1
         event = EStopEvent(
@@ -113,7 +113,7 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
         if not runtime.plc.is_locked:
             raise HTTPException(status_code=409, detail="E-Stop not locked")
         await runtime.plc.release()
-        async with runtime.metrics.lock:
+        with runtime.metrics.lock:
             runtime.metrics.is_estop_locked = False
         event = EStopEvent(
             event_type=EventType.E_STOP_RELEASE,

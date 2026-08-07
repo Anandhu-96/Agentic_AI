@@ -30,10 +30,10 @@ class RuntimeMetrics:
     inference_count: int = 0
     started_at: float = field(default_factory=time.time)
     is_estop_locked: bool = False
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
-    async def snapshot(self) -> dict:
-        async with self.lock:
+    def snapshot(self) -> dict:
+        with self.lock:
             return {
                 "node_id": "",
                 "uptime_s": round(time.time() - self.started_at, 1),

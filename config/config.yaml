@@ -6,18 +6,19 @@ edge:
   fps_limit: 30
 
 video:
-  source: 0                             # camera index, video path, or rtsp:// URL
+  source: "We_want_the_vedio_of_the_engin.mp4"
   width: 1280
   height: 720
   save_output: false
   output_dir: "data/output"
-  synthetic_camera: true                # true = never touch the camera (demo)
+  synthetic_camera: false
 
 vision:
   model: "yolov8n.pt"
-  backend: "synthetic"                  # synthetic (zero-hardware demo) | yolov8
+  backend: "yolov8"                  # synthetic (zero-hardware demo) | yolov8
   conf_threshold: 0.45
   iou_threshold: 0.5
+  device: "cpu"
   classes:
     - person
     - helmet

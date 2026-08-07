@@ -261,13 +261,10 @@ def main() -> None:
             st.metric("Remaining Life", f"{last.get('remaining_hours', 0):,.0f} h")
 
     st.divider()
-    st.subheader("Live Video Feed + Event Stream")
+    st.subheader("Live Detection Video Feed")
     st.components.v1.html(
-        _SSE_HTML.format(
-            video_url=f"{API_BASE}/video-feed",
-            stream_url=f"{API_BASE}/stream",
-        ),
-        height=520,
+        '<iframe src="http://127.0.0.1:8080/edge/video-feed" width="100%" height="480" style="border:none; border-radius:8px;" allow="autoplay"></iframe>',
+        height=500,
     )
 
     st.divider()

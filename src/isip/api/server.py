@@ -56,7 +56,8 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
     prefix = runtime.settings.api.edge_prefix
 
     @app.get(f"{prefix}/health", tags=["edge"])
-    def health() -> EdgeStatus:
+    async def health() -> EdgeStatus:
+        snapshot = await runtime.metrics.snapshot()
         return EdgeStatus(
             node_id=runtime.settings.edge.node_id,
             online=True,
@@ -64,12 +65,12 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
             fps=runtime.metrics.last_fps,
             alerts=runtime.metrics.alert_count,
             estop_locked=runtime.plc.is_locked,
-            uptime_s=runtime.metrics.snapshot()["uptime_s"],
+            uptime_s=snapshot["uptime_s"],
         )
 
     @app.get(f"{prefix}/metrics", tags=["edge"])
-    def metrics() -> dict:
-        m = runtime.metrics.snapshot()
+    async def metrics() -> dict:
+        m = await runtime.metrics.snapshot()
         m["node_id"] = runtime.settings.edge.node_id
         return m
 
@@ -84,7 +85,7 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
     @app.post(f"{prefix}/trigger-estop", tags=["control"])
     async def trigger_estop(req: EStopRequest) -> dict:
         latency_ms = await runtime.plc.trip(req.mode)
-        with runtime.metrics.lock:
+        async with runtime.metrics.lock:
             runtime.metrics.is_estop_locked = True
             runtime.metrics.alert_count += 1
         event = EStopEvent(
@@ -111,7 +112,7 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
         if not runtime.plc.is_locked:
             raise HTTPException(status_code=409, detail="E-Stop not locked")
         await runtime.plc.release()
-        with runtime.metrics.lock:
+        async with runtime.metrics.lock:
             runtime.metrics.is_estop_locked = False
         event = EStopEvent(
             event_type=EventType.E_STOP_RELEASE,

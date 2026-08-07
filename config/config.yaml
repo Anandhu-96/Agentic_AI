@@ -22,6 +22,7 @@ vision:
   classes:
     - person
     - helmet
+    - vest
   ppe_required: ["helmet", "vest"]
   ppe_rules:
     "no-helmet":

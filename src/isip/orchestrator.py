@@ -309,6 +309,8 @@ class EdgeOrchestrator:
 
     async def _release_resources(self) -> None:
         self._release_capture()
+        self.runtime.video_stream.stop()
+        self.runtime.detection_stream.stop()
         if self.runtime.plc.is_locked:
             await self.runtime.plc.release()
         self.runtime.broker.close()
@@ -323,6 +325,9 @@ class EdgeOrchestrator:
         self.runtime.video_stream.start()
         if self.runtime.video_stream.error is not None:
             logger.error("video stream failed to start: %s", self.runtime.video_stream.error)
+        self.runtime.detection_stream.start()
+        if self.runtime.detection_stream.error is not None:
+            logger.error("detection stream failed to start: %s", self.runtime.detection_stream.error)
         self._tasks = [
             asyncio.create_task(self._inference_loop(), name="inference"),
             asyncio.create_task(self._telemetry_loop(), name="telemetry"),

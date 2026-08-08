@@ -40,10 +40,7 @@ violations = evaluate_ppe(workers, detections, settings.vision, worker_ids=worke
 
 machines = [d for d in detections if d.class_name == "machine"]
 machine_tracker = MachineTracker(iou_threshold=0.3, max_age=10)
-tracks = [
-    t for t in machine_tracker.update([(m.x1, m.y1, m.x2, m.y2) for m in machines])
-    if t is not None
-]
+tracks = [t for t in machine_tracker.update([m.norm_bbox for m in machines]) if t is not None]
 dynamic = DynamicZoneEngine().update(tracks)
 
 active = set()
@@ -55,7 +52,8 @@ for worker in workers:
 # Render with the shared renderer
 draw_static_zones(frame, geofences, active, viz=settings.visualization)
 draw_dynamic_zones(frame, dynamic, viz=settings.visualization)
-draw_detections(frame, detections, violations, viz=settings.visualization)
+draw_detections(frame, detections, violations, worker_ids=workers_ids,
+                viz=settings.visualization)
 draw_status_bar(frame, max(detector.latency_ms and 1000.0 / max(detector.latency_ms, 1.0), 0),
                 detector.latency_ms, len(detections), len(machines))
 

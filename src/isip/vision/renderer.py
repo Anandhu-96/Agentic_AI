@@ -7,6 +7,10 @@ node, dashboard images and legacy pipeline all render the same world:
   is available, otherwise the bounding box;
 - machines get a highlighted bbox plus their dynamic danger zone;
 - static geofences and dynamic machine zones are visually distinct.
+
+Coordinate convention: all geometry handed to the renderer is either already
+pixel-sized (``Detection`` boxes/polygons) or normalized-and-then-scaled by the
+helper itself (zones). Nothing here invents positions.
 """
 
 from __future__ import annotations
@@ -24,12 +28,11 @@ from .zones import DynamicZone
 _SCHEME = {
     "person_safe": (40, 180, 40),
     "person_violation": (40, 40, 180),
-    "person_zone": (40, 40, 200),
     "helmet": (180, 180, 40),
     "vest": (180, 40, 180),
     "gloves": (40, 120, 180),
     "machine": (200, 120, 20),
-    "machine_zone": (40, 60, 220),
+    "machine_zone": (40, 60, 220),  # bright blue danger zone
     "static_zone": (0, 120, 180),
     "static_zone_active": (0, 0, 180),
 }
@@ -60,21 +63,32 @@ def _draw_person_shape(frame: np.ndarray, det: Detection, color, viz: Visualizat
 def draw_detections(frame: np.ndarray, detections: List[Detection],
                     violations: List[Tuple[str, str, float]],
                     machine_ids: Optional[Dict[int, Optional[str]]] = None,
+                    worker_ids: Optional[List[str]] = None,
                     viz: Optional[VisualizationConfig] = None) -> None:
-    """Draw all detections; violations tie workers to their missing gear."""
+    """Draw all detections; violations tie workers to their missing gear.
+
+    Persons are matched to ``violations`` by the same stable ``W-N`` labels the
+    tracker emits. ``worker_ids`` must line up 1:1 with the person detections;
+    when omitted a position-derived label is used as a fallback.
+    """
     viz = viz or VisualizationConfig()
+    person_idx = 0  # index into worker_ids for person detections only
 
     for idx, det in enumerate(detections):
         x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
         if det.is_person:
-            label = f"W-{int(det.bbox_center[0] * 1000)}"
+            if worker_ids is not None and person_idx < len(worker_ids):
+                label = worker_ids[person_idx]
+            else:
+                label = f"W-{int(det.bbox_center[0] * 1000)}"
+            person_idx += 1
             if any(v[0] == label for v in violations):
                 color = _SCHEME["person_violation"]
             else:
                 color = _SCHEME["person_safe"]
             _draw_person_shape(frame, det, color, viz)
             missing = [v[1] for v in violations if v[0] == label]
-            tag = f"W{label[-4:]} MISSING {','.join(missing)}" if missing else "SAFE"
+            tag = f"{label} MISSING {','.join(missing)}" if missing else "SAFE"
             _draw_box_label(frame, x1, y1, tag, color)
         elif det.class_name == "helmet":
             cv2.rectangle(frame, (x1, y1), (x2, y2), _SCHEME["helmet"], 1)

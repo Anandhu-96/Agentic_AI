@@ -1,33 +1,4 @@
-"""Regenerate the GitHub Pages showcase site.
-
-Two deployment layouts are supported so the site works with no GitHub
-Settings changes:
-
-- ``docs/index.html``    — for repos configured with Pages "deploy from a
-                           branch: main, folder: /docs".
-- ``index.html`` (root)  — for repos whose Pages currently deploys from the
-                           repo root (Jekyll renders a root ``index.html`` if
-                           present, instead of the README). The root page
-                           references the already-tracked ``dashboard/``
-                           assets, so nothing else needs to move.
-
-Run after regenerating ``dashboard/detection_output.jpg``:
-
-    python scripts/build_showcase.py
-
-It only (re)writes ``docs/`` and the root ``index.html``; it is idempotent.
-"""
-
-from __future__ import annotations
-
-import shutil
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent.parent
-DASH = ROOT / "dashboard"
-DOCS = ROOT / "docs"
-
-LANDING_PAGE = """<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -97,17 +68,17 @@ LANDING_PAGE = """<!DOCTYPE html>
 
   <div class="img-row">
     <figure>
-      <img src="__IMG__detection_output.jpg" alt="Annotated detection frame with person polygons, machine danger zone and geofences" />
+      <img src="dashboard/detection_output.jpg" alt="Annotated detection frame with person polygons, machine danger zone and geofences" />
       <figcaption>Detection overlay &mdash; person polygons, machine danger zone, static geofences</figcaption>
     </figure>
     <figure>
-      <img src="__IMG__geofence_test.jpg" alt="Geofence zone visualization" />
+      <img src="dashboard/geofence_test.jpg" alt="Geofence zone visualization" />
       <figcaption>Restricted-zone geofencing</figcaption>
     </figure>
   </div>
 
   <p>
-    <a class="btn" href="__DASH__">Open interactive dashboard demo</a>
+    <a class="btn" href="dashboard/isip-dashboard.html">Open interactive dashboard demo</a>
     <a class="btn" href="https://github.com/Anandhu-96/Agentic_AI">View source on GitHub</a>
   </p>
 
@@ -122,42 +93,3 @@ LANDING_PAGE = """<!DOCTYPE html>
 </div>
 </body>
 </html>
-"""
-
-
-def main() -> None:
-    DOCS.mkdir(exist_ok=True)
-
-    # Preview images (from the dashboard folder so one source of truth stays).
-    for name in ("detection_output.jpg", "geofence_test.jpg"):
-        src = DASH / name
-        if not src.exists():
-            raise FileNotFoundError(f"missing {src} — run scripts/generate_dashboard_image.py first")
-        shutil.copyfile(src, DOCS / name)
-
-    # Interactive dashboard demo (static, CDN-based).
-    demo = DASH / "isip-dashboard.html"
-    if demo.exists():
-        shutil.copyfile(demo, DOCS / "isip-dashboard.html")
-
-    # docs/ layout (Pages configured with folder /docs).
-    (DOCS / "index.html").write_text(
-        LANDING_PAGE.replace("__IMG__", "").replace("__DASH__", "isip-dashboard.html"),
-        encoding="utf-8",
-    )
-
-    # Root layout (Pages deploying from repo root): reuse the already-tracked
-    # dashboard/ assets so the live site shows the showcase with no Settings
-    # changes and nothing gets duplicated at the repo root.
-    (ROOT / "index.html").write_text(
-        LANDING_PAGE.replace("__IMG__", "dashboard/").replace("__DASH__", "dashboard/isip-dashboard.html"),
-        encoding="utf-8",
-    )
-
-    print(f"showcase updated under {DOCS} and {ROOT / 'index.html'}")
-    for p in sorted(DOCS.iterdir()):
-        print(f"  docs/{p.name} ({p.stat().st_size} bytes)")
-
-
-if __name__ == "__main__":
-    main()

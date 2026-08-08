@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -30,10 +29,9 @@ from .iiot.anomaly import AnomalyEngine
 from .iiot.rul import ThermalRulEstimator
 from .iiot.telemetry import TelemetryEngine
 from .runtime import EdgeRuntime
-from .vision.detector import Detection, ObjectDetector, get_feet_position
+from .vision.detector import Detection, ObjectDetector, build_detector
+from .vision.geofence import GeofenceEngine
 from .vision.ppe import evaluate_ppe
-from .vision.tracking import MachineTracker, WorkerTracker
-from .vision.zones import DynamicZoneEngine
 
 logger = logging.getLogger(__name__)
 
@@ -58,27 +56,17 @@ class EdgeOrchestrator:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.runtime = EdgeRuntime(settings)
-        self.detector: ObjectDetector = self.runtime.detector
-        self.geofences = self.runtime.geofences
+        self.detector: ObjectDetector = build_detector(settings.vision)
+        self.geofences = GeofenceEngine.from_yaml(settings.vision.geofences_file)
         self.anomaly = AnomalyEngine(settings.iiot.thresholds)
         self.rul = ThermalRulEstimator(settings.rul)
         self.telemetry = TelemetryEngine(settings.iiot)
-        self.tracker = WorkerTracker()
-        self.machine_tracker = MachineTracker(
-            iou_threshold=settings.tracking.iou_threshold,
-            max_age=settings.tracking.max_age,
-        )
-        self.dynamic_zones = DynamicZoneEngine(settings.dynamic_zones.machine_danger)
 
         self._active_zones: Set[str] = set()
-        self._active_machine_zones: Set[str] = set()
         self._active_ppe: Set[Tuple[str, str]] = set()
-        self._ppe_cooldown_s: float = 8.0
-        self._last_ppe_fire: Dict[Tuple[str, str], float] = {}
         self._cap = None
         self._tasks: List[asyncio.Task] = []
         self._shutdown = asyncio.Event()
-        self._api_thread: Optional[threading.Thread] = None
 
     # ------------------------------------------------------------------ vision
 
@@ -129,42 +117,12 @@ class EdgeOrchestrator:
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
 
                 workers = [d for d in detections if d.class_name == "person"]
-                worker_ids = self.tracker.update([w.norm_center for w in workers])
                 await self._check_geofences(workers)
-                await self._check_ppe(workers, detections, worker_ids)
-
-                machines = [d for d in detections if d.class_name == "machine"]
-                _tracks = []
-                machine_ids: Dict[int, Optional[str]] = {}
-                if machines:
-                    _matches = self.machine_tracker.update([m.norm_bbox for m in machines])
-                    machine_ids = {
-                        idx: (t.id if t is not None else None)
-                        for idx, t in enumerate(_matches)
-                        if t is not None
-                    }
-                # Dynamic zones derive from ALL live tracks (including machines
-                # momentarily missed), so the danger zone holds for max_age.
-                dynamic = self.dynamic_zones.update(self.machine_tracker.active_tracks)
-                await self._check_machine_zones(workers, dynamic)
+                await self._check_ppe(workers, detections)
 
                 with self.runtime.metrics.lock:
                     self.runtime.metrics.last_latency_ms = elapsed_ms
-                    actual_fps = 1000.0 / max(elapsed_ms, 1.0)
-                    self.runtime.metrics.last_fps = min(actual_fps, float(self.settings.edge.fps_limit))
                     self.runtime.metrics.inference_count += 1
-
-                active_all = set(self._active_zones) | set(self._active_machine_zones)
-                # Publish once so both video producers render without their
-                # own YOLO calls (single inference stream on the GPU).
-                self.runtime.detection_state.update(
-                    detections,
-                    active_all,
-                    self.runtime.metrics.last_fps,
-                    elapsed_ms,
-                    dynamic_zones={z.name: z for z in dynamic},
-                    machine_ids=machine_ids,
-                )
 
                 if frame_idx % 15 == 0:
                     await self.runtime.broker.publish(
@@ -172,7 +130,7 @@ class EdgeOrchestrator:
                             event_type=EventType.INFERENCE_OK,
                             severity=Severity.INFO,
                             latency_ms=elapsed_ms,
-                            detections=[d.to_event_dict() for d in detections[:8]],
+                            detections=[d.__dict__ for d in detections[:8]],
                             fps=self.runtime.metrics.last_fps,
                         )
                     )
@@ -183,10 +141,14 @@ class EdgeOrchestrator:
                 continue
             await asyncio.sleep(max(0.0, interval - elapsed_ms / 1000.0))
 
+        logger.debug("inference loop stopped")
+
     async def _check_geofences(self, workers: List[Detection]) -> None:
         seen: Set[str] = set()
         for worker in workers:
-            zone = self.geofences.locate_detection(worker)
+            w, h = self.settings.video.width, self.settings.video.height
+            cx, cy = worker.bbox_center
+            zone = self.geofences.locate((cx / w, cy / h))
             if zone is None:
                 continue
             seen.add(zone.name)
@@ -203,6 +165,13 @@ class EdgeOrchestrator:
             )
             await self.runtime.broker.publish(event)
             self._audit(event)
+            logger.warning(
+                "zone intrusion zone=%s severity=%s worker=%s confidence=%.2f",
+                zone.name,
+                severity.value,
+                f"W-{int(cx * 50)}-{int(cy * 50)}",
+                worker.confidence,
+            )
             if zone.action == "TRIP_RELAY":
                 await self._trip_relay(reason=f"zone_intrusion:{zone.name}")
 
@@ -215,69 +184,17 @@ class EdgeOrchestrator:
             )
             await self.runtime.broker.publish(event)
             self._audit(event)
+            logger.info("zone cleared zone=%s", cleared)
 
-        # Publish the authoritative active-zone set so the /zones endpoint and
-        # dashboards read the exact same state as the event stream.
-        self.runtime.video_stream.latest_active_zones = set(self._active_zones)
-        self.runtime.detection_stream.latest_active_zones = set(self._active_zones)
-
-    async def _check_machine_zones(self, workers: List[Detection], dynamic) -> None:
-        """Evaluate workers against machine-derived danger zones.
-
-        A worker whose feet enter a machine danger zone fires a CRITICAL
-        ZONE_INTRUSION for the dynamic zone (deduplicated by zone name).
-        """
-        seen: Set[str] = set()
-        for worker in workers:
-            feet = get_feet_position(worker)
-            zone = self.dynamic_zones.locate(feet)
-            if zone is None:
-                continue
-            seen.add(zone.name)
-            if zone.name in self._active_machine_zones:
-                continue
-            self._active_machine_zones.add(zone.name)
-            event = SafetyEvent(
-                event_type=EventType.ZONE_INTRUSION,
-                severity=Severity.CRITICAL,
-                zone_id=zone.name,
-                confidence=worker.confidence,
-                payload={
-                    "zone": zone.name,
-                    "machine_id": zone.machine_id,
-                    "description": "Worker inside machine danger zone",
-                    "dynamic": True,
-                },
-            )
-            await self.runtime.broker.publish(event)
-            self._audit(event)
-            await self._trip_relay(reason=f"machine_danger:{zone.name}")
-
-        for cleared in self._active_machine_zones - seen:
-            self._active_machine_zones.discard(cleared)
-            event = SafetyEvent(
-                event_type=EventType.ZONE_CLEARED,
-                severity=Severity.INFO,
-                zone_id=cleared,
-                payload={"dynamic": True},
-            )
-            await self.runtime.broker.publish(event)
-            self._audit(event)
-
-    async def _check_ppe(self, workers: List[Detection], all_dets: List[Detection],
-                     worker_ids: List[str] | None = None) -> None:
-        violations = evaluate_ppe(workers, all_dets, self.settings.vision,
-                                  worker_ids=worker_ids)
-        active = set()
-        now = time.time()
+    async def _check_ppe(self, workers: List[Detection], all_dets: List[Detection]) -> None:
+        violations = evaluate_ppe(workers, all_dets, self.settings.vision)
+        current_keys = set()
         for label, gear, conf in violations:
             key = (label, gear)
-            active.add(key)
-            # Cooldown so detections flickering frame-to-frame on real video
-            # don't re-fire a fresh PPE_VIOLATION every inference tick.
-            if now - self._last_ppe_fire.get(key, 0.0) < self._ppe_cooldown_s:
+            current_keys.add(key)
+            if key in self._active_ppe:
                 continue
-            self._last_ppe_fire[key] = now
+            self._active_ppe.add(key)
             rule = self.settings.vision.ppe_rules.get(f"no-{gear}")
             event = SafetyEvent(
                 event_type=EventType.PPE_VIOLATION,
@@ -288,10 +205,20 @@ class EdgeOrchestrator:
             )
             await self.runtime.broker.publish(event)
             self._audit(event)
-        self._active_ppe = active
+            logger.debug(
+                "ppe violation NEW worker=%s missing=%s severity=%s confidence=%.2f",
+                label,
+                gear,
+                event.severity.value,
+                conf,
+            )
+        cleared = self._active_ppe - current_keys
+        for key in cleared:
+            self._active_ppe.discard(key)
 
     async def _trip_relay(self, reason: str) -> None:
         if self.runtime.plc.is_locked:
+            logger.debug("relay already locked, skipping trip reason=%s", reason)
             return
         latency_ms = await self.runtime.plc.trip("HARD")
         with self.runtime.metrics.lock:
@@ -310,9 +237,12 @@ class EdgeOrchestrator:
     # ----------------------------------------------------------------- iiot
 
     async def _telemetry_loop(self) -> None:
+        logger.info("telemetry loop started sensors=%s", self.settings.iiot.sensor_ids)
         try:
             async for sample in self.telemetry.stream():
                 try:
+                    logger.debug("telemetry sample sensor=%s metric=%s value=%s status=%s",
+                                 sample.sensor_id, sample.metric, sample.value, sample.status)
                     await self.runtime.broker.publish(
                         BaseEvent(
                             event_type=EventType.TELEMETRY,
@@ -341,11 +271,20 @@ class EdgeOrchestrator:
                         )
                         await self.runtime.broker.publish(event)
                         self._audit(event)
+                        logger.warning(
+                            "anomaly detected sensor=%s kind=%s value=%.2f message=%s",
+                            sample.sensor_id,
+                            anomaly.kind,
+                            anomaly.value,
+                            anomaly.message,
+                        )
                         if sample.sensor_id == "TMP_BRG_02" and anomaly.kind == "THRESHOLD_CRITICAL":
                             await self._trip_relay(reason="thermal_critical")
 
                     if sample.sensor_id == "TMP_BRG_02":
                         rul_state = self.rul.observe(sample.value)
+                        logger.debug("RUL update health=%.1f%% remaining=%.1fh status=%s",
+                                     rul_state.health_pct, rul_state.remaining_hours, rul_state.status)
                         await self.runtime.broker.publish(
                             BaseEvent(
                                 event_type=EventType.RUL_UPDATE,
@@ -359,6 +298,7 @@ class EdgeOrchestrator:
         except Exception as exc:  # noqa: BLE001
             logger.exception("telemetry loop error: %s", exc)
             await asyncio.sleep(1.0)
+        logger.info("telemetry loop stopped")
 
     # ---------------------------------------------------------------- support
 
@@ -374,6 +314,7 @@ class EdgeOrchestrator:
         )
 
     async def _heartbeat_loop(self) -> None:
+        logger.debug("heartbeat loop started")
         while not self._shutdown.is_set():
             await asyncio.sleep(5.0)
             if self._shutdown.is_set():
@@ -384,11 +325,12 @@ class EdgeOrchestrator:
                     severity=Severity.INFO,
                     payload={
                         "node_id": self.settings.edge.node_id,
-                        "uptime_s": self.runtime.metrics.snapshot()["uptime_s"],
+                        "uptime_s": (await self.runtime.metrics.snapshot())["uptime_s"],
                         "edge_ok": not self.runtime.plc.is_locked,
                     },
                 )
             )
+        logger.debug("heartbeat loop stopped")
 
     def _register_signal_handlers(self) -> None:
         try:
@@ -400,8 +342,6 @@ class EdgeOrchestrator:
 
     async def _release_resources(self) -> None:
         self._release_capture()
-        self.runtime.video_stream.stop()
-        self.runtime.detection_stream.stop()
         if self.runtime.plc.is_locked:
             await self.runtime.plc.release()
         self.runtime.broker.close()
@@ -413,12 +353,15 @@ class EdgeOrchestrator:
 
     async def run(self, with_api: bool = True) -> None:
         self._register_signal_handlers()
+        logger.info(
+            "starting orchestrator node=%s backend=%s api=%s",
+            self.settings.edge.node_id,
+            self.settings.vision.backend,
+            with_api,
+        )
         self.runtime.video_stream.start()
         if self.runtime.video_stream.error is not None:
             logger.error("video stream failed to start: %s", self.runtime.video_stream.error)
-        self.runtime.detection_stream.start()
-        if self.runtime.detection_stream.error is not None:
-            logger.error("detection stream failed to start: %s", self.runtime.detection_stream.error)
         self._tasks = [
             asyncio.create_task(self._inference_loop(), name="inference"),
             asyncio.create_task(self._telemetry_loop(), name="telemetry"),
@@ -430,19 +373,17 @@ class EdgeOrchestrator:
 
             app = create_app(self.runtime)
             cfg = self.settings.api
-
-            def _serve_api() -> None:
-                uvicorn.run(
-                    app,
-                    host=cfg.host,
-                    port=cfg.port,
-                    log_level="warning",
+            self._tasks.append(
+                asyncio.create_task(
+                    uvicorn.Server(
+                        uvicorn.Config(
+                            app, host=cfg.host, port=cfg.port, log_level="warning"
+                        )
+                    ).serve(),
+                    name="api",
                 )
-
-            self._api_thread = threading.Thread(
-                target=_serve_api, daemon=True, name="api"
             )
-            self._api_thread.start()
+            logger.info("fastapi control plane listening on %s:%d", cfg.host, cfg.port)
         logger.info(
             "edge orchestrator online: backend=%s latency_budget=%dms",
             self.settings.vision.backend,
@@ -451,6 +392,7 @@ class EdgeOrchestrator:
         try:
             await asyncio.wait(self._tasks, return_when=asyncio.FIRST_COMPLETED)
         finally:
+            logger.info("orchestrator shutting down")
             await self._release_resources()
 
 

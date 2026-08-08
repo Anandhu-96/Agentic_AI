@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import yaml
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 Point = Tuple[float, float]
 
@@ -81,7 +84,9 @@ class GeofenceEngine:
     def from_yaml(cls, path: str | Path) -> "GeofenceEngine":
         with open(path, "r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh) or {}
-        return cls(data.get("zones", {}))
+        zones = data.get("zones", {})
+        logger.info("geofence engine loaded zones=%s from %s", list(zones.keys()), path)
+        return cls(zones)
 
     @property
     def zones(self) -> Dict[str, GeofenceZone]:
@@ -91,6 +96,7 @@ class GeofenceEngine:
         """Return the first zone containing ``point``, or ``None``."""
         for zone in self._zones.values():
             if point_in_polygon(point, zone.polygon):
+                logger.debug("point %s inside zone=%s", point, zone.name)
                 return zone
         return None
 

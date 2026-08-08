@@ -141,14 +141,17 @@ class TelemetryEngine:
             if isinstance(self._transport, EmulatedTransport)
             else {}
         )
+        logger.info("telemetry engine initialized protocol=%s sensors=%s", protocol, config.sensor_ids)
 
     async def stream(self, interval_s: float | None = None) -> AsyncIterator[TelemetrySample]:
         interval = interval_s or self.config.sampling_interval_s
+        logger.debug("telemetry stream started interval=%.1fs sensors=%s", interval, self.config.sensor_ids)
         while True:
             await asyncio.sleep(interval)
             for sensor_id in self.config.sensor_ids:
                 value = await self._transport.read(sensor_id)
                 if value is None:
+                    logger.warning("telemetry read returned None for sensor=%s", sensor_id)
                     continue
                 metric = (
                     self._emulated_meta.get(sensor_id, {}).get("metric", "value")

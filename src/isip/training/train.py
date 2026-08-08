@@ -12,6 +12,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Built-in Ultralytics dataset config (auto-downloaded on first use).
 CONSTRUCTION_PPE = "construction-ppe.yaml"
@@ -48,6 +51,8 @@ def train(
     """
     from ultralytics import YOLO
 
+    logger.info("starting training model=%s data=%s epochs=%d imgsz=%d batch=%d",
+                model, data, epochs, imgsz, batch)
     model = YOLO(model)
     model.train(
         data=data,
@@ -57,6 +62,7 @@ def train(
         project=project,
         name=name,
     )
+    logger.info("training completed project=%s name=%s", project, name)
     return model
 
 

@@ -1,0 +1,895 @@
+# =============================================================================
+# ISIP — Combined Source Bundle for Claude Enhancement
+# =============================================================================
+# This single file contains the exact current contents of the 5 files that
+# handle video overlay rendering, geofence drawing, dashboard display, and the
+# API endpoints that serve them. Each section is clearly labeled so Claude can
+# see the full context without having to infer relationships across files.
+# =============================================================================
+
+
+# =============================================================================
+# FILE: src/isip/dashboard/app.py  (321 lines)
+# =============================================================================
+# ROLE: Streamlit operator dashboard.
+# - Renders KPIs, telemetry charts, RUL gauge, safety events table.
+# - _SSE_HTML (lines 175-215): Inline HTML/JS that shows the MJPEG video feed
+#   via an <img> tag and consumes the SSE event stream via EventSource,
+#   appending live events below the video.
+# - render_video_panel() (lines 218-226): Injects the HTML into Streamlit.
+# - main() (lines 229-321): Assembles the full dashboard page.
+# =============================================================================
+
+"""Streamlit operator dashboard.
+
+Live video overlay + telemetry monitoring UI. Uses SSE for real-time events
+instead of REST polling. When the API is unreachable it falls back to local
+emulation so the dashboard always renders during demos.
+"""
+
+from __future__ import annotations
+
+import json
+import random
+import time
+from typing import Dict, List
+
+import pandas as pd
+import plotly.graph_objects as go
+import requests
+import streamlit as st
+
+API_BASE = "http://127.0.0.1:8080/edge"
+MAX_POINTS = 120
+
+st.set_page_config(
+    page_title="ISIP // Operator Dashboard",
+    page_icon="🛡️",
+    layout="wide",
+)
+
+# Small amount of global CSS so section cards have breathing room and don't
+# visually run into one another.
+st.markdown(
+    """
+    <style>
+      div[data-testid="stVerticalBlockBorderWrapper"] { margin-bottom: 0.75rem; }
+      div[data-testid="stMetric"] { overflow: hidden; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+@st.cache_data(ttl=2, show_spinner=False)
+def api_get(path: str) -> Dict:
+    try:
+        resp = requests.get(f"{API_BASE}{path}", timeout=2)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException:
+        return {}
+
+
+@st.cache_data(ttl=2, show_spinner=False)
+def api_post(path: str, body: Dict | None = None) -> Dict:
+    try:
+        resp = requests.post(f"{API_BASE}{path}", json=body or {}, timeout=2)
+        return resp.json()
+    except requests.RequestException:
+        return {}
+
+
+def fallback_metrics() -> Dict:
+    return {
+        "latency_ms": round(13.0 + random.random() * 2.5, 1),
+        "fps": round(68 + random.random() * 5, 1),
+        "alerts": st.session_state.get("fallback_alerts", 0),
+        "is_estop_locked": False,
+        "uptime_s": time.time() - st.session_state.get("boot", time.time()),
+        "online": False,
+    }
+
+
+def fallback_sample() -> Dict:
+    return {
+        "timestamp": time.time(),
+        "sensor_id": random.choice(["TMP_BRG_02", "VIB_MTR_01", "GAS_CO_03"]),
+        "metric": random.choice(["temperature", "vibration", "co_ppm"]),
+        "value": round(random.uniform(38, 78), 2),
+        "unit": random.choice(["C", "Hz", "ppm"]),
+        "status": "NORMAL",
+    }
+
+
+def render_kpis(metrics: Dict) -> None:
+    c1, c2, c3, c4, c5 = st.columns(5, gap="medium")
+    c1.metric("Latency", f"{metrics.get('latency_ms', 0):.1f} ms")
+    c2.metric("FPS", f"{metrics.get('fps', 0):.1f}")
+    c3.metric("Alerts", metrics.get("alerts", 0))
+    c4.metric("Uptime", f"{metrics.get('uptime_s', 0):.0f}s")
+    estop = metrics.get("is_estop_locked", False)
+    c5.metric("E-Stop", "LOCKED" if estop else "ARMED")
+
+
+def render_status_banner(metrics: Dict) -> None:
+    online = metrics.get("online", False)
+    stamp = time.strftime("%H:%M:%S")
+    if online:
+        st.success(
+            f"**EDGE NODE ONLINE** — live data from `{API_BASE}` · "
+            f"node `{metrics.get('node_id', '?')}` · checked {stamp}"
+        )
+    else:
+        st.warning(
+            f"**API OFFLINE** — could not reach `{API_BASE}` · showing **local "
+            f"emulation** (not live) · checked {stamp}"
+        )
+
+
+def render_system_check(metrics: Dict) -> None:
+    with st.expander("System Check (live diagnostic)", expanded=False):
+        c1, c2, c3, c4 = st.columns(4, gap="medium")
+        c1.metric("Edge Node", metrics.get("node_id", "—"))
+        c2.metric("Uptime", f"{metrics.get('uptime_s', 0):.0f}s")
+        c3.metric("Latency", f"{metrics.get('latency_ms', 0):.1f} ms")
+        c4.metric("Inferences", metrics.get("inferences", 0))
+        st.caption(
+            f"SSE stream `{API_BASE}/stream` · last refresh "
+            f"{time.strftime('%H:%M:%S')} · data source: "
+            f"{'**LIVE**' if metrics.get('online') else '**EMULATED**'}"
+        )
+
+
+def build_telemetry_chart(samples: List[Dict]) -> go.Figure:
+    df = pd.DataFrame(samples)
+    fig = go.Figure()
+    if not df.empty:
+        for metric in ["temperature", "vibration", "co_ppm"]:
+            sub = df[df["metric"] == metric]
+            if not sub.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=sub["timestamp"],
+                        y=sub["value"],
+                        mode="lines",
+                        name=metric,
+                        line=dict(width=2),
+                    )
+                )
+    fig.update_layout(
+        height=320,
+        margin=dict(l=10, r=10, t=30, b=10),
+        xaxis_title="time",
+        yaxis_title="value",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#94a3b8"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    return fig
+
+
+def rul_gauge(health_pct: float) -> go.Figure:
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=health_pct,
+            title={"text": "RUL Health"},
+            gauge={
+                "axis": {"range": [0, 100]},
+                "bar": {"color": "#10b981"},
+                "steps": [
+                    {"range": [0, 20], "color": "#7f1d1d"},
+                    {"range": [20, 50], "color": "#92400e"},
+                    {"range": [50, 100], "color": "#064e3b"},
+                ],
+            },
+        )
+    )
+    fig.update_layout(height=220, margin=dict(l=20, r=20, t=50, b=10), paper_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+
+# Single video component: the event log is now a fixed strip BELOW the video
+# (with its own solid background) instead of floating on top of it, so text
+# never overlaps the picture.
+_SSE_HTML = """
+<div id="isip-sse-root" style="width:100%;border-radius:8px;overflow:hidden;background:#0b1118;">
+  <div style="position:relative;width:100%;height:420px;background:#000;">
+    <img id="isip-video" src="{video_url}" style="width:100%;height:100%;object-fit:contain;display:block;" />
+  </div>
+  <div id="isip-events" style="width:100%;height:130px;overflow-y:auto;font:11px/1.5 monospace;
+       background:#0b1118;border-top:1px solid #1e293b;padding:6px 8px;box-sizing:border-box;"></div>
+</div>
+<script>
+  (function() {{
+    const streamUrl = "{stream_url}";
+    const img = document.getElementById("isip-video");
+    const evts = document.getElementById("isip-events");
+    if (!img || !evts) return;
+    img.onerror = function() {{
+      img.style.display = "none";
+      evts.innerHTML = '<div style="color:#f87171">VIDEO FEED UNAVAILABLE</div>';
+    }};
+    const es = new EventSource(streamUrl);
+    es.onmessage = function(e) {{
+      try {{
+        const d = JSON.parse(e.data);
+        const div = document.createElement("div");
+        const sev = d.severity === "CRITICAL" ? "#f87171" : d.severity === "WARNING" ? "#fbbf24" : "#94a3b8";
+        div.style.color = sev;
+        div.textContent = "> " + d.event_type + " [" + d.severity + "] " + (d.latency_ms ? d.latency_ms.toFixed(1)+"ms " : "") + JSON.stringify(d.payload || {{}}).slice(0, 120);
+        evts.appendChild(div);
+        while (evts.children.length > 80) evts.removeChild(evts.firstChild);
+        evts.scrollTop = evts.scrollHeight;
+      }} catch(err) {{}}
+    }};
+    es.onerror = function() {{
+      const div = document.createElement("div");
+      div.style.color = "#fbbf24";
+      div.textContent = "SSE RECONNECTING...";
+      evts.appendChild(div);
+      evts.scrollTop = evts.scrollHeight;
+    }};
+  }})();
+</script>
+"""
+
+
+def render_video_panel() -> None:
+    st.components.v1.html(
+        _SSE_HTML.format(
+            video_url=f"{API_BASE}/video-feed",
+            stream_url=f"{API_BASE}/stream",
+        ),
+        height=560,
+        scrolling=False,
+    )
+
+
+def main() -> None:
+    st.title("🛡️ ISIP — Operator Dashboard")
+    st.caption("Industrial Safety Intelligence Platform · Edge Node 01 · OFFLINE EDGE RESILIENT")
+
+    metrics = api_get("/metrics")
+    if not metrics:
+        metrics = fallback_metrics()
+        st.session_state["fallback_alerts"] = metrics["alerts"]
+        metrics["online"] = False
+    else:
+        metrics["online"] = True
+
+    with st.sidebar:
+        st.header("Control Plane")
+        if st.button("🚨 TRIGGER E-STOP", type="primary", use_container_width=True, key="btn_estop_trigger"):
+            result = api_post("/trigger-estop", {"mode": "HARD"})
+            st.write(result or {"status": "emulated trip"})
+        if st.button("Release E-Stop", use_container_width=True, key="btn_estop_release"):
+            result = api_post("/release-estop")
+            st.write(result or {"status": "released (emulated)"})
+        st.divider()
+        if st.button("Run connection check", use_container_width=True, key="btn_conn_check"):
+            try:
+                check = requests.get(f"{API_BASE}/health", timeout=2).json()
+                st.success(f"CONNECTED — {check}")
+            except requests.RequestException as exc:
+                st.error(f"UNREACHABLE — {API_BASE} ({exc.__class__.__name__})")
+        st.divider()
+        st.subheader("Audit Ledger")
+        for i, row in enumerate(api_get("/audit?limit=8") or []):
+            st.code(f"{row['event_type']} [{row['severity']}]", language=None)
+
+    render_status_banner(metrics)
+
+    with st.container(border=True):
+        render_kpis(metrics)
+        render_system_check(metrics)
+
+    events = api_get("/events?limit=200") or []
+
+    # Telemetry + RUL, each in its own bordered card so they don't visually
+    # bleed together; gauge column widened so its number/title has room.
+    col1, col2 = st.columns([2, 1], gap="medium")
+    with col1:
+        with st.container(border=True):
+            st.subheader("IIoT Telemetry — Live")
+            samples = [
+                e["payload"]
+                for e in events
+                if e.get("event_type") == "TELEMETRY" and "payload" in e
+            ]
+            if not samples:
+                samples = [fallback_sample() for _ in range(30)]
+            samples = samples[-MAX_POINTS:]
+            st.plotly_chart(build_telemetry_chart(samples), use_container_width=True)
+
+    with col2:
+        with st.container(border=True):
+            st.subheader("RUL Estimation")
+            rul_events = [
+                e["payload"]
+                for e in events
+                if e.get("event_type") == "RUL_UPDATE" and "payload" in e
+            ]
+            health = rul_events[-1].get("health_pct", 100.0) if rul_events else 100.0
+            if rul_events:
+                last = rul_events[-1]
+                st.metric("Remaining Life", f"{last.get('remaining_hours', 0):,.0f} h")
+            st.plotly_chart(rul_gauge(health), use_container_width=True)
+
+    with st.container(border=True):
+        st.subheader("Live Detection Video Feed")
+        render_video_panel()
+
+    with st.container(border=True):
+        st.subheader("Safety Events")
+        rows = [
+            {
+                "time": pd.to_datetime(e.get("timestamp", 0), unit="s").strftime("%H:%M:%S"),
+                "event_type": e.get("event_type"),
+                "severity": e.get("severity"),
+                "latency_ms": e.get("latency_ms"),
+            }
+            for e in events[:50]
+        ]
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, height=260)
+        else:
+            st.info("No events yet — start the edge orchestrator.")
+
+
+if __name__ == "__main__":
+    main()
+
+
+# =============================================================================
+# FILE: src/isip/runtime.py  (212 lines)
+# =============================================================================
+# ROLE: Shared edge runtime state + background MJPEG frame producer.
+# - RuntimeMetrics (lines 25-45): Thread-safe metrics snapshot (latency, fps,
+#   alerts, inferences, estop state, uptime).
+# - VideoStreamProducer (lines 48-191): Background thread that:
+#     * Reads frames (camera or synthetic)
+#     * Runs detection + PPE evaluation
+#     * Draws geofence polygons (lines 128-154) — SCALED TO 0.5x
+#     * Draws detection boxes (lines 156-169)
+#     * Encodes JPEG and pushes to a queue for /video-feed
+# - EdgeRuntime (lines 194-212): Composition root wiring broker, metrics,
+#   audit, plc, and video_stream together.
+# =============================================================================
+
+"""Shared edge runtime state wiring broker, control plane, and audit together."""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import queue
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Optional
+
+import cv2
+import numpy as np
+
+from .config import Settings
+from .control.audit import AuditLogger
+from .control.plc import PlcRelay
+from .events.broker import EventBroker
+from .vision.detector import build_detector
+from .vision.geofence import GeofenceEngine
+from .vision.ppe import evaluate_ppe
+
+
+@dataclass
+class RuntimeMetrics:
+    last_latency_ms: float = 0.0
+    last_fps: float = 0.0
+    alert_count: int = 0
+    inference_count: int = 0
+    started_at: float = field(default_factory=time.time)
+    is_estop_locked: bool = False
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    async def snapshot(self) -> dict:
+        async with self.lock:
+            return {
+                "node_id": "",
+                "uptime_s": round(time.time() - self.started_at, 1),
+                "latency_ms": round(self.last_latency_ms, 2),
+                "fps": round(self.last_fps, 2),
+                "alerts": self.alert_count,
+                "inferences": self.inference_count,
+                "is_estop_locked": self.is_estop_locked,
+            }
+
+
+class VideoStreamProducer:
+    """Background thread that continuously produces MJPEG frames."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.vision_cfg = settings.vision
+        self.video_cfg = settings.video
+        self.detector = build_detector(self.vision_cfg)
+        self.geofences = GeofenceEngine.from_yaml(self.vision_cfg.geofences_file)
+        self._queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=20)
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+        self._error: Optional[Exception] = None
+
+    @property
+    def error(self) -> Optional[Exception]:
+        return self._error
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._error = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def get_frame(self, timeout: float = 1.0) -> Optional[bytes]:
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def _run(self) -> None:
+        try:
+            cap = None
+            if not self.video_cfg.synthetic_camera:
+                cap = cv2.VideoCapture(self.video_cfg.source)
+                if not cap.isOpened():
+                    cap = None
+
+            target_fps = max(1, int(getattr(self.settings.edge, "fps_limit", 4)))
+            interval = 1.0 / target_fps
+            last_inference = 0.0
+            inference_interval = 1.0 / max(1, target_fps - 1)
+
+            while self._running:
+                try:
+                    frame_start = time.perf_counter()
+                    if cap is not None:
+                        ret, frame = cap.read()
+                        if not ret:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            continue
+                        if self.video_cfg.width and self.video_cfg.height:
+                            frame = cv2.resize(frame, (self.video_cfg.width, self.video_cfg.height))
+                    else:
+                        frame = np.zeros((self.video_cfg.height, self.video_cfg.width, 3), dtype=np.uint8)
+
+                    now = time.perf_counter()
+                    if now - last_inference >= inference_interval:
+                        last_inference = now
+                        started = time.perf_counter()
+                        detections = self.detector.detect(frame)
+                        elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+                        workers = [d for d in detections if d.class_name == "person"]
+                        violations = evaluate_ppe(workers, detections, self.vision_cfg)
+
+                        h, w = frame.shape[:2]
+                        active_zones = set()
+                        for worker in workers:
+                            wx, wy = worker.bbox_center
+                            zone = self.geofences.locate((wx / w, wy / h))
+                            if zone is not None:
+                                active_zones.add(zone.name)
+                        for zone in self.geofences.zones.values():
+                            pts = np.array(zone.polygon, dtype=np.float32)
+                            centroid = pts.mean(axis=0)
+                            pts = centroid + (pts - centroid) * 0.5
+                            pts[:, 0] *= w
+                            pts[:, 1] *= h
+                            pts = pts.astype(int)
+                            if len(pts) >= 3:
+                                is_active = zone.name in active_zones
+                                base_color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
+                                overlay = frame.copy()
+                                fill_alpha = 0.35 if is_active else 0.15
+                                cv2.fillPoly(overlay, [pts], color=base_color)
+                                cv2.addWeighted(overlay, fill_alpha, frame, 1.0 - fill_alpha, 0, frame)
+                                line_thickness = 4 if is_active else 2
+                                cv2.polylines(frame, [pts], isClosed=True, color=base_color, thickness=line_thickness)
+                                for i, (px, py) in enumerate(pts):
+                                    radius = 6 if is_active else 4
+                                    cv2.circle(frame, (int(px), int(py)), radius, base_color, -1)
+                                    cv2.circle(frame, (int(px), int(py)), radius + 3, (255, 255, 255), 2)
+                                label_y = max(14, int(pts[:, 1].min()) - 10)
+                                if is_active:
+                                    cv2.putText(frame, f"{zone.name} [ACTIVE]", (int(pts[:, 0].min()), label_y),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 3)
+                                else:
+                                    cv2.putText(frame, zone.name, (int(pts[:, 0].min()), label_y),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, base_color, 2)
+
+                        for det in detections:
+                            x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
+                            color = (40, 180, 40)
+                            if det.class_name == "person":
+                                worker_label = f"W-{int(det.bbox_center[0] * 1000)}"
+                                has_violation = any(v[0] == worker_label for v in violations)
+                                color = (40, 40, 180) if has_violation else (40, 180, 40)
+                            elif det.class_name == "helmet":
+                                color = (180, 180, 40)
+                            elif det.class_name == "vest":
+                                color = (180, 40, 180)
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                            label = f"{det.class_name} ({det.confidence:.2f})"
+                            cv2.putText(frame, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+                    cv2.putText(frame, f"FPS: {target_fps} | Latency: {elapsed_ms:.1f}ms",
+                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+                    ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    if ret:
+                        frame_bytes = buf.tobytes()
+                        try:
+                            self._queue.put_nowait(frame_bytes)
+                        except queue.Full:
+                            try:
+                                self._queue.get_nowait()
+                                self._queue.put_nowait(frame_bytes)
+                            except queue.Empty:
+                                pass
+
+                    elapsed = time.perf_counter() - frame_start
+                    time.sleep(max(0.0, interval - elapsed))
+                except Exception as exc:
+                    time.sleep(0.1)
+        except Exception as exc:
+            self._error = exc
+
+
+class EdgeRuntime:
+    """Composition root for a single edge node."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.broker = EventBroker()
+        self.metrics = RuntimeMetrics()
+        self.audit = AuditLogger(
+            audit_dir=settings.logging.audit_dir,
+            node_id=settings.edge.node_id,
+        )
+        self.plc = PlcRelay(
+            gpio=settings.control.estop_gpio,
+            relay_channel=settings.control.relay_channel,
+            line_id=settings.control.line_id,
+            use_gpio=settings.control.use_gpio,
+            trip_delay_ms=settings.control.trip_delay_ms,
+        )
+        self.video_stream = VideoStreamProducer(settings)
+
+
+# =============================================================================
+# FILE: config/geofences.yaml  (23 lines)
+# =============================================================================
+# ROLE: Defines restricted-zone polygons in normalized (0..1) coordinates.
+# - DANGER_ZONE_A: CRITICAL, TRIP_RELAY action. High-voltage switchyard.
+# - EXCLUSION_ZONE_B: WARNING, ALERT_ONLY. Robotic arm cell.
+# These polygons are used by GeofenceEngine for point-in-polygon tests AND
+# drawn as visual overlays in runtime.py and generate_dashboard_image.py.
+# =============================================================================
+
+# Restricted zone definitions for point-in-polygon geofencing.
+# Coordinates are normalized (0..1) relative to the frame width/height.
+zones:
+  DANGER_ZONE_A:
+    description: "High-voltage switchyard - no entry without work permit"
+    severity: "CRITICAL"
+    polygon:
+      - [0.40, 0.40]
+      - [0.70, 0.40]
+      - [0.72, 0.55]
+      - [0.65, 0.75]
+      - [0.40, 0.75]
+    action: "TRIP_RELAY"
+  EXCLUSION_ZONE_B:
+    description: "Robotic arm cell - hard hat and vest required"
+    severity: "WARNING"
+    polygon:
+      - [0.05, 0.10]
+      - [0.30, 0.10]
+      - [0.32, 0.20]
+      - [0.25, 0.35]
+      - [0.05, 0.35]
+    action: "ALERT_ONLY"
+
+
+# =============================================================================
+# FILE: scripts/generate_dashboard_image.py  (80 lines)
+# =============================================================================
+# ROLE: Generates a single static annotated frame (dashboard/detection_output.jpg).
+# - Uses the same detector + geofence + PPE pipeline as the live stream.
+# - Draws geofence polygons scaled to 0.5x (lines 26-32).
+# - Draws detection boxes with violation highlighting (lines 38-64).
+# - Adds info overlay text (lines 66-70).
+# =============================================================================
+
+"""Generate annotated detection image for the dashboard."""
+import cv2
+import numpy as np
+import random
+
+from isip.config import Settings
+from isip.vision.detector import build_detector, SyntheticDetector
+from isip.vision.geofence import GeofenceEngine
+from isip.vision.ppe import evaluate_ppe
+
+settings = Settings.from_yaml("config/config.yaml")
+detector = build_detector(settings.vision)
+
+# Generate synthetic frame
+frame = np.zeros((settings.video.height, settings.video.width, 3), dtype=np.uint8)
+frame[:] = (30, 40, 30)  # dark green-gray background
+
+# Get detections
+detections = detector.detect(frame)
+workers = [d for d in detections if d.class_name == "person"]
+
+# Load geofences for zone visualization
+geofences = GeofenceEngine.from_yaml(settings.vision.geofences_file)
+
+# Draw geofence zones
+for zone in geofences.zones.values():
+    pts = np.array(zone.polygon, dtype=np.float32)
+    centroid = pts.mean(axis=0)
+    pts = centroid + (pts - centroid) * 0.5
+    pts[:, 0] *= settings.video.width
+    pts[:, 1] *= settings.video.height
+    pts = pts.astype(int)
+    color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
+    cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=2)
+    cv2.putText(frame, zone.name, (pts[0][0], pts[0][1] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+# Draw detections
+violations = evaluate_ppe(workers, detections, settings.vision)
+violation_map = {(label, gear) for label, gear, conf in violations}
+
+for det in detections:
+    x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
+    is_person = det.class_name == "person"
+    
+    if is_person:
+        # Check if worker has PPE violations
+        worker_label = f"W-{int(det.bbox_center[0] * 1000)}"
+        has_violation = any(v[0] == worker_label for v in violations)
+        color = (40, 40, 180) if has_violation else (40, 180, 40)  # Blue=violation, Green=compliant
+        
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        label = f"Worker {det.confidence:.2f}"
+        cv2.putText(frame, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        
+        if has_violation:
+            missing = [v[1] for v in violations if v[0] == worker_label]
+            cv2.putText(frame, f"Missing: {', '.join(missing)}", 
+                       (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (40, 40, 180), 2)
+    else:
+        # PPE items
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (180, 180, 40), 1)
+        cv2.putText(frame, f"{det.class_name} {det.confidence:.2f}", 
+                   (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 40), 1)
+
+# Add info overlay
+cv2.putText(frame, f"ISIP Edge Node | Detections: {len(detections)} | Workers: {len(workers)}",
+            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+cv2.putText(frame, f"Violations: {len(violations)}",
+            (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (60, 60, 180), 2)
+
+# Save image
+output_path = "dashboard/detection_output.jpg"
+cv2.imwrite(output_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+print(f"Saved annotated frame to {output_path}")
+print(f"Shape: {frame.shape}")
+print(f"Detections: {len(detections)}")
+print(f"PPE Violations: {len(violations)}")
+for label, gear, conf in violations:
+    print(f"  - {label} missing {gear}")
+
+
+# =============================================================================
+# FILE: src/isip/api/server.py  (177 lines)
+# =============================================================================
+# ROLE: FastAPI control-plane server.
+# - /edge/health, /edge/metrics: Node status + performance
+# - /edge/events, /edge/audit: Recent broker events + audit ledger
+# - /edge/trigger-estop, /edge/release-estop: E-Stop control
+# - /edge/config: Loaded settings dump
+# - /edge/video-feed (lines 138-157): MJPEG streaming endpoint that reads
+#   JPEG bytes from VideoStreamProducer.get_frame() and yields multipart
+#   response. This is what the dashboard <img> tag consumes.
+# - /edge/stream (lines 159-175): SSE endpoint that subscribes to the broker
+#   and yields JSON events. This is what the dashboard EventSource consumes
+#   for the live event log below the video.
+# =============================================================================
+
+"""FastAPI control-plane server.
+
+Exposes the edge node's health, metrics, audit trail, and the E-Stop control
+surface so operators and the Streamlit dashboard can act on the system.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import List, Optional
+
+from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from ..events.schemas import (
+    AuditEntry,
+    BaseEvent,
+    EStopEvent,
+    EventType,
+    Severity,
+)
+from ..runtime import EdgeRuntime
+
+logger = logging.getLogger(__name__)
+
+
+class EStopRequest(BaseModel):
+    mode: str = Field(default="HARD", pattern="^(HARD|SOFT)$")
+
+
+class EdgeStatus(BaseModel):
+    node_id: str
+    online: bool
+    latency_ms: float
+    fps: float
+    alerts: int
+    estop_locked: bool
+    uptime_s: float
+
+
+def create_app(runtime: EdgeRuntime) -> FastAPI:
+    app = FastAPI(
+        title="Industrial Safety Intelligence Platform",
+        version="0.1.0",
+        description="Edge-first multi-modal safety AI control plane.",
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    prefix = runtime.settings.api.edge_prefix
+
+    @app.get(f"{prefix}/health", tags=["edge"])
+    async def health() -> EdgeStatus:
+        snapshot = await runtime.metrics.snapshot()
+        return EdgeStatus(
+            node_id=runtime.settings.edge.node_id,
+            online=True,
+            latency_ms=runtime.metrics.last_latency_ms,
+            fps=runtime.metrics.last_fps,
+            alerts=runtime.metrics.alert_count,
+            estop_locked=runtime.plc.is_locked,
+            uptime_s=snapshot["uptime_s"],
+        )
+
+    @app.get(f"{prefix}/metrics", tags=["edge"])
+    async def metrics() -> dict:
+        m = await runtime.metrics.snapshot()
+        m["node_id"] = runtime.settings.edge.node_id
+        return m
+
+    @app.get(f"{prefix}/events", tags=["edge"])
+    def events(limit: int = Query(default=50, ge=1, le=500)) -> List[BaseEvent]:
+        return runtime.broker.snapshot()[-limit:][::-1]
+
+    @app.get(f"{prefix}/audit", tags=["edge"])
+    def audit(limit: int = Query(default=100, ge=1, le=1000)) -> List[dict]:
+        return runtime.audit.latest(limit)
+
+    @app.post(f"{prefix}/trigger-estop", tags=["control"])
+    async def trigger_estop(req: EStopRequest) -> dict:
+        latency_ms = await runtime.plc.trip(req.mode)
+        async with runtime.metrics.lock:
+            runtime.metrics.is_estop_locked = True
+            runtime.metrics.alert_count += 1
+        event = EStopEvent(
+            event_type=EventType.E_STOP_TRIGGERED,
+            severity=Severity.CRITICAL,
+            latency_ms=latency_ms,
+            relay=runtime.plc.relay_channel,
+            mode=req.mode,
+            line_id=runtime.plc.line_id,
+        )
+        await runtime.broker.publish(event)
+        runtime.audit.record(
+            AuditEntry(
+                event_type=event.event_type,
+                severity=event.severity,
+                latency_ms=latency_ms,
+                node_id=runtime.settings.edge.node_id,
+            )
+        )
+        return {"status": "TRIPPED", "latency_ms": latency_ms, "relay": runtime.plc.relay_channel}
+
+    @app.post(f"{prefix}/release-estop", tags=["control"])
+    async def release_estop() -> dict:
+        if not runtime.plc.is_locked:
+            raise HTTPException(status_code=409, detail="E-Stop not locked")
+        await runtime.plc.release()
+        async with runtime.metrics.lock:
+            runtime.metrics.is_estop_locked = False
+        event = EStopEvent(
+            event_type=EventType.E_STOP_RELEASE,
+            severity=Severity.INFO,
+            relay=runtime.plc.relay_channel,
+        )
+        await runtime.broker.publish(event)
+        runtime.audit.record(
+            AuditEntry(
+                event_type=event.event_type,
+                severity=event.severity,
+                latency_ms=0.0,
+                node_id=runtime.settings.edge.node_id,
+            )
+        )
+        return {"status": "RELEASED"}
+
+    @app.get(f"{prefix}/config", tags=["edge"])
+    def config() -> dict:
+        return runtime.settings.model_dump()
+
+    @app.get(f"{prefix}/video-feed", tags=["edge"])
+    async def video_feed() -> Response:
+        producer = runtime.video_stream
+
+        def gen_frames():
+            while True:
+                frame_bytes = producer.get_frame(timeout=1.0)
+                if frame_bytes is None:
+                    continue
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(frame_bytes)).encode() + b"\r\n\r\n"
+                ) + frame_bytes + b"\r\n"
+
+        return StreamingResponse(
+            gen_frames(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+
+    @app.get(f"{prefix}/stream", tags=["edge"])
+    async def event_stream() -> Response:
+        async def gen_events():
+            async for event in runtime.broker.subscribe():
+                payload = event.model_dump(mode="json")
+                payload.pop("latency_ms", None)
+                yield f"data: {json.dumps(payload)}\n\n"
+
+        return StreamingResponse(
+            gen_events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    return app

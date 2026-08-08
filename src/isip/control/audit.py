@@ -21,20 +21,39 @@ logger = logging.getLogger(__name__)
 
 class AuditLogger:
     def __init__(self, audit_dir: str = "logs", node_id: str = "edge-node-01",
-                 ring_size: int = 500) -> None:
+                 ring_size: int = 500, max_bytes: int = 10 * 1024 * 1024,
+                 backup_count: int = 3) -> None:
         self.node_id = node_id
         self._dir = Path(audit_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._path = self._dir / "eval_audit.jsonl"
         self._ring: Deque[Dict] = deque(maxlen=ring_size)
         self._lock = threading.Lock()
+        self._max_bytes = max_bytes
+        self._backup_count = backup_count
+
+    def _rotate(self) -> None:
+        for i in range(self._backup_count - 1, 0, -1):
+            src = self._dir / f"eval_audit.jsonl.{i}"
+            dst = self._dir / f"eval_audit.jsonl.{i + 1}"
+            if src.exists():
+                src.replace(dst)
+        rotated = self._dir / "eval_audit.jsonl.1"
+        if rotated.exists():
+            rotated.unlink()
+        self._path.replace(rotated)
 
     def record(self, entry: AuditEntry) -> None:
         row = entry.model_dump()
         with self._lock:
             self._ring.append(row)
-            with self._path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(row, default=str) + "\n")
+            try:
+                if self._path.exists() and self._path.stat().st_size >= self._max_bytes:
+                    self._rotate()
+                with self._path.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(row, default=str) + "\n")
+            except OSError as exc:
+                logger.error("failed to write audit entry to %s: %s", self._path, exc)
 
     def latest(self, limit: int = 100) -> List[Dict]:
         with self._lock:

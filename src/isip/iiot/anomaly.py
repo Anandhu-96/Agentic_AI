@@ -59,12 +59,14 @@ class AnomalyEngine:
         if threshold is not None:
             if value >= threshold.critical:
                 roll.push(value)
+                logger.warning("anomaly THRESHOLD_CRITICAL sensor=%s value=%.2f >= %.2f", sensor_id, value, threshold.critical)
                 return SensorAnomaly(
                     sensor_id, "THRESHOLD_CRITICAL", value, threshold.critical,
                     f"{sensor_id} critical: {value:.1f} >= {threshold.critical}",
                 )
             if value >= threshold.warn:
                 roll.push(value)
+                logger.info("anomaly THRESHOLD_WARN sensor=%s value=%.2f >= %.2f", sensor_id, value, threshold.warn)
                 return SensorAnomaly(
                     sensor_id, "THRESHOLD_WARN", value, threshold.warn,
                     f"{sensor_id} warn: {value:.1f} >= {threshold.warn}",
@@ -72,12 +74,14 @@ class AnomalyEngine:
 
         if z > self._spike_z:
             roll.push(value)
+            logger.warning("anomaly SPIKE sensor=%s value=%.2f z=%.1f", sensor_id, value, z)
             return SensorAnomaly(
                 sensor_id, "SPIKE", value, None,
                 f"{sensor_id} sudden spike (z={z:.1f}): {value:.1f}",
             )
         if z < -self._drift_z:
             roll.push(value)
+            logger.warning("anomaly DRIFT sensor=%s value=%.2f z=%.1f", sensor_id, value, z)
             return SensorAnomaly(
                 sensor_id, "DRIFT", value, None,
                 f"{sensor_id} drift detected (z={z:.1f}): {value:.1f}",

@@ -1,9 +1,9 @@
 edge:
   node_id: "edge-node-01"
-  hardware: "nvidia-rtx-5050-laptop"
+  hardware: "nvidia-jetson-orin-nano"
   inference_backend: "yolov8"          # yolov8 | synthetic
   target_latency_ms: 20
-  fps_limit: 30
+  fps_limit: 5
 
 video:
   source: "We_want_the_vedio_of_the_engin.mp4"
@@ -14,25 +14,15 @@ video:
   synthetic_camera: false
 
 vision:
-  # synthetic (demo) | yolov8 (COCO detect) | yolov8_world (open-vocab) | yolov8_seg
-  backend: "yolov8_world"
-  model: "yolov8s-world.pt"            # YOLO-World open-vocabulary checkpoint
-  conf_threshold: 0.30
+  model: "yolov8n.pt"
+  backend: "synthetic"                  # synthetic (zero-hardware demo) | yolov8
+  conf_threshold: 0.45
   iou_threshold: 0.5
-  imgsz: 640
-  device: "cuda"
+  device: "cpu"
   classes:
     - person
     - helmet
-    - safety vest
-  machine_classes:
-    - machine
-    - heavy machinery
-    - industrial machinery
-    - construction equipment
-    - engine
-    - engines
-    - motor
+    - vest
   ppe_required: ["helmet", "vest"]
   ppe_rules:
     "no-helmet":
@@ -42,28 +32,6 @@ vision:
       missing: ["vest"]
       severity: "WARNING"
   geofences_file: "config/geofences.yaml"
-  segmentation:
-    enabled: false                      # true when using a *-seg model
-    model: "yolov8n-seg.pt"
-
-tracking:
-  enabled: true
-  max_age: 10
-  iou_threshold: 0.3
-
-dynamic_zones:
-  machine_danger:
-    enabled: true
-    buffer: 0.05
-    smoothing: 0.7
-
-visualization:
-  show_person_bbox: false
-  show_person_polygon: true
-  fill_person_polygon: true
-  show_machine_bbox: true
-  show_machine_zone: true
-  show_static_zones: true
 
 iiot:
   sensor_ids:
@@ -102,6 +70,7 @@ api:
   host: "0.0.0.0"
   port: 8080
   edge_prefix: "/edge"
+  debug: true
 
 dashboard:
   host: "127.0.0.1"
@@ -111,3 +80,8 @@ dashboard:
 logging:
   audit_dir: "logs"
   level: "INFO"
+  log_file: "logs/isip_edge.log"
+  max_bytes: 5242880
+  backup_count: 5
+  audit_max_bytes: 10485760
+  audit_backup_count: 3

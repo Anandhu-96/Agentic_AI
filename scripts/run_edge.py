@@ -8,8 +8,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import logging
 
+from isip.config import Settings
+from isip.logging_config import setup_logging
 from isip.orchestrator import from_yaml
 
 
@@ -19,13 +20,15 @@ def main() -> None:
     parser.add_argument("--no-api", action="store_true", help="skip REST control plane")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    settings = Settings.from_yaml(args.config)
+    setup_logging(settings.logging, node_id=settings.edge.node_id)
     orchestrator = from_yaml(args.config)
     try:
         import asyncio
         asyncio.run(orchestrator.run(with_api=not args.no_api))
     except KeyboardInterrupt:
-        logging.info("edge orchestrator stopped")
+        import logging
+        logging.getLogger("isip").info("edge orchestrator stopped")
 
 
 if __name__ == "__main__":

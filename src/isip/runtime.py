@@ -1,14 +1,36 @@
-"""Shared edge runtime state wiring broker, control plane, and audit together."""
+"""Shared edge runtime state wiring broker, control plane, and audit together.
+
+PRODUCTION NOTES
+-----------------
+- RuntimeMetrics is written from two contexts: FastAPI's asyncio event loop
+  (e.g. trigger_estop) and the VideoStreamProducer background thread. A plain
+  ``asyncio.Lock`` only protects against concurrent *coroutines* on the same
+  event loop -- it does nothing for a real OS thread, and using it from a
+  thread with no running loop will raise. This version uses a
+  ``threading.Lock`` for the actual critical section (cheap, non-blocking for
+  the small dict updates here) and exposes both a sync ``snapshot_sync()`` and
+  an async ``snapshot()`` wrapper so both call sites stay correct.
+- VideoStreamProducer now takes the shared RuntimeMetrics instance and
+  actually updates latency/fps/inference_count after each inference --
+  previously these fields were computed locally and only used for the
+  on-frame text overlay, so `/metrics` and the dashboard KPIs never reflected
+  real numbers.
+- The camera capture is released on stop/exit, loop errors are logged instead
+  of swallowed, and a stalled/errored thread is surfaced via `.error` so the
+  API layer (and a future liveness probe) can detect it instead of quietly
+  serving a frozen feed.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import io
+import logging
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Set
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -17,15 +39,11 @@ from .config import Settings
 from .control.audit import AuditLogger
 from .control.plc import PlcRelay
 from .events.broker import EventBroker
-from .vision.detector import ObjectDetector, build_detector
+from .vision.detector import build_detector
 from .vision.geofence import GeofenceEngine
 from .vision.ppe import evaluate_ppe
-from .vision.renderer import (
-    draw_detections,
-    draw_dynamic_zones,
-    draw_static_zones,
-    draw_status_bar,
-)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,10 +54,24 @@ class RuntimeMetrics:
     inference_count: int = 0
     started_at: float = field(default_factory=time.time)
     is_estop_locked: bool = False
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    # threading.Lock, not asyncio.Lock: this object is written from a
+    # background OS thread (VideoStreamProducer) as well as from asyncio
+    # coroutines, and asyncio.Lock is not valid across that boundary.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def snapshot(self) -> dict:
-        with self.lock:
+    @property
+    def lock(self) -> threading.Lock:
+        """Kept as `.lock` for call-site compatibility; use `with metrics.lock:`."""
+        return self._lock
+
+    def record_inference(self, latency_ms: float, fps: float) -> None:
+        with self._lock:
+            self.last_latency_ms = latency_ms
+            self.last_fps = fps
+            self.inference_count += 1
+
+    def snapshot_sync(self) -> dict:
+        with self._lock:
             return {
                 "node_id": "",
                 "uptime_s": round(time.time() - self.started_at, 1),
@@ -50,104 +82,53 @@ class RuntimeMetrics:
                 "is_estop_locked": self.is_estop_locked,
             }
 
-
-class DetectionState:
-    """Thread-safe snapshot of the latest inference results.
-
-    The orchestrator's inference loop writes here once per frame; the two
-    video producers read it afterwards and only render boxes/zones. This keeps
-    YOLO running exactly ONE stream on the GPU instead of three.
-    """
-
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
-        self._detections = []
-        self._active_zones: Set[str] = set()
-        self._fps = 0.0
-        self._latency_ms = 0.0
-        self._dynamic_zones = {}  # name -> dict (normalized polygon, machine_id)
-        self._machine_ids: Dict[int, Optional[str]] = {}
-
-    def update(self, detections, active_zones, fps: float, latency_ms: float,
-               dynamic_zones=None, machine_ids=None) -> None:
-        with self.lock:
-            self._detections = list(detections)
-            self._active_zones = set(active_zones)
-            self._fps = fps
-            self._latency_ms = latency_ms
-            self._dynamic_zones = dict(dynamic_zones or {})
-            self._machine_ids = dict(machine_ids or {})
-
-    def snapshot(self):
-        with self.lock:
-            return (
-                list(self._detections),
-                set(self._active_zones),
-                self._fps,
-                self._latency_ms,
-                dict(self._dynamic_zones),
-                dict(self._machine_ids),
-            )
-
-    @property
-    def active_zones(self) -> Set[str]:
-        with self.lock:
-            return set(self._active_zones)
-
-    @property
-    def dynamic_zones(self) -> dict:
-        with self.lock:
-            return dict(self._dynamic_zones)
-
-    @property
-    def machine_ids(self) -> dict:
-        with self.lock:
-            return dict(self._machine_ids)
+    async def snapshot(self) -> dict:
+        # threading.Lock critical section here is tiny (dict construction),
+        # so taking it synchronously inside a coroutine is fine and avoids
+        # the asyncio/threading lock mismatch entirely.
+        return self.snapshot_sync()
 
 
 class VideoStreamProducer:
     """Background thread that continuously produces MJPEG frames."""
 
-    def __init__(
-        self,
-        settings: Settings,
-        *,
-        draw_zones: bool = True,
-        detector: ObjectDetector | None = None,
-        geofences: GeofenceEngine | None = None,
-        shared_state: DetectionState | None = None,
-    ) -> None:
+    def __init__(self, settings: Settings, metrics: Optional[RuntimeMetrics] = None) -> None:
         self.settings = settings
         self.vision_cfg = settings.vision
         self.video_cfg = settings.video
-        self.vision_overlay_cfg = settings.visualization
-        self.detector = detector or build_detector(self.vision_cfg)
-        self.geofences = geofences or GeofenceEngine.from_yaml(self.vision_cfg.geofences_file)
-        self._draw_zones = draw_zones
-        self._shared_state = shared_state
-        self._inference_lock = threading.Lock()
+        self.metrics = metrics
+        self.detector = build_detector(self.vision_cfg)
+        self.geofences = GeofenceEngine.from_yaml(self.vision_cfg.geofences_file)
         self._queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=20)
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._error: Optional[Exception] = None
-        self.latest_active_zones: Set[str] = set()
+        self._frame_times: "deque[float]" = deque(maxlen=30)
 
     @property
     def error(self) -> Optional[Exception]:
         return self._error
 
+    @property
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
     def start(self) -> None:
         if self._running:
+            logger.debug("video stream already running")
             return
         self._running = True
         self._error = None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        logger.info("video stream producer started target_fps=%d", self.settings.edge.fps_limit)
 
     def stop(self) -> None:
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                logger.warning("Video producer thread did not stop within timeout")
 
     def get_frame(self, timeout: float = 1.0) -> Optional[bytes]:
         try:
@@ -156,20 +137,23 @@ class VideoStreamProducer:
             return None
 
     def _run(self) -> None:
+        cap = None
         try:
-            cap = None
             if not self.video_cfg.synthetic_camera:
                 cap = cv2.VideoCapture(self.video_cfg.source)
                 if not cap.isOpened():
+                    logger.error(
+                        "Could not open video source %r; falling back to synthetic frames",
+                        self.video_cfg.source,
+                    )
                     cap = None
 
-            # Display-only streams don't need to match the inference FPS;
-            # throttle them so CPU video decode + JPEG encoding doesn't starve
-            # the YOLO pipeline (which runs its own loop).
-            target_fps = 12 if self._shared_state is not None else max(
-                1, int(getattr(self.settings.edge, "fps_limit", 4))
-            )
+            target_fps = max(1, int(getattr(self.settings.edge, "fps_limit", 4)))
             interval = 1.0 / target_fps
+            last_inference = 0.0
+            inference_interval = 1.0 / max(1, target_fps - 1)
+            elapsed_ms = 0.0
+            consecutive_errors = 0
 
             while self._running:
                 try:
@@ -184,51 +168,79 @@ class VideoStreamProducer:
                     else:
                         frame = np.zeros((self.video_cfg.height, self.video_cfg.width, 3), dtype=np.uint8)
 
-                    h, w = frame.shape[:2]
+                    now = time.perf_counter()
+                    if now - last_inference >= inference_interval:
+                        last_inference = now
+                        started = time.perf_counter()
+                        detections = self.detector.detect(frame)
+                        elapsed_ms = (time.perf_counter() - started) * 1000.0
 
-                    # One YOLO pipeline owns inference and shares the result.
-                    # When connected to a shared state we only render, so the
-                    # GPU runs one stream instead of three.
-                    if self._shared_state is not None:
-                        (detections, active_zones, _fps, lat_ui,
-                         dynamic_zones, machine_ids) = self._shared_state.snapshot()
-                        dynamic = list(dynamic_zones.values())
-                        violations = evaluate_ppe(
-                            [d for d in detections if d.class_name == "person"],
-                            detections,
-                            self.vision_cfg,
-                        )
-                    else:
-                        with self._inference_lock:
-                            started = time.perf_counter()
-                            detections = self.detector.detect(frame)
-                            lat_ui = (time.perf_counter() - started) * 1000.0
-                        violations = evaluate_ppe(
-                            [d for d in detections if d.class_name == "person"],
-                            detections,
-                            self.vision_cfg,
-                        )
+                        self._frame_times.append(time.perf_counter())
+                        if len(self._frame_times) >= 2:
+                            dt = self._frame_times[-1] - self._frame_times[0]
+                            actual_fps = (len(self._frame_times) - 1) / dt if dt > 0 else 0.0
+                        else:
+                            actual_fps = 0.0
+                        current_fps = min(actual_fps, float(self.settings.edge.fps_limit) * 1.5)
+                        if self.metrics is not None:
+                            self.metrics.record_inference(elapsed_ms, current_fps)
+
+                        workers = [d for d in detections if d.class_name == "person"]
+                        violations = evaluate_ppe(workers, detections, self.vision_cfg)
+
+                        h, w = frame.shape[:2]
                         active_zones = set()
-                        dynamic = []
-                        machine_ids = {}
-                        for worker in (d for d in detections if d.class_name == "person"):
-                            zone = self.geofences.locate_detection(worker)
+                        for worker in workers:
+                            wx, wy = worker.bbox_center
+                            zone = self.geofences.locate((wx / w, wy / h))
                             if zone is not None:
                                 active_zones.add(zone.name)
-                        self.latest_active_zones = active_zones
+                        for zone in self.geofences.zones.values():
+                            pts = np.array(zone.polygon, dtype=np.float32)
+                            centroid = pts.mean(axis=0)
+                            pts = centroid + (pts - centroid) * 0.5
+                            pts[:, 0] *= w
+                            pts[:, 1] *= h
+                            pts = pts.astype(int)
+                            if len(pts) >= 3:
+                                is_active = zone.name in active_zones
+                                base_color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
+                                overlay = frame.copy()
+                                fill_alpha = 0.35 if is_active else 0.15
+                                cv2.fillPoly(overlay, [pts], color=base_color)
+                                cv2.addWeighted(overlay, fill_alpha, frame, 1.0 - fill_alpha, 0, frame)
+                                line_thickness = 4 if is_active else 2
+                                cv2.polylines(frame, [pts], isClosed=True, color=base_color, thickness=line_thickness)
+                                for i, (px, py) in enumerate(pts):
+                                    radius = 6 if is_active else 4
+                                    cv2.circle(frame, (int(px), int(py)), radius, base_color, -1)
+                                    cv2.circle(frame, (int(px), int(py)), radius + 3, (255, 255, 255), 2)
+                                label_y = max(14, int(pts[:, 1].min()) - 10)
+                                if is_active:
+                                    cv2.putText(frame, f"{zone.name} [ACTIVE]", (int(pts[:, 0].min()), label_y),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 3)
+                                else:
+                                    cv2.putText(frame, zone.name, (int(pts[:, 0].min()), label_y),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, base_color, 2)
 
-                    # Render detections (person polygons when available),
-                    # machines, static geofences and machine danger zones.
-                    draw_detections(frame, detections, violations,
-                                    machine_ids=machine_ids,
-                                    viz=self.vision_overlay_cfg)
-                    if self._draw_zones:
-                        draw_static_zones(frame, self.geofences, active_zones,
-                                          viz=self.vision_overlay_cfg)
-                        draw_dynamic_zones(frame, dynamic, viz=self.vision_overlay_cfg)
-                    n_machines = sum(1 for d in detections if d.is_machine)
-                    draw_status_bar(frame, 1000.0 / max(lat_ui, 1.0), lat_ui,
-                                    len(detections), n_machines)
+                        for det in detections:
+                            x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
+                            color = (40, 180, 40)
+                            if det.class_name == "person":
+                                wx, wy = det.bbox_center
+                                worker_label = f"W-{int(wx * 50)}-{int(wy * 50)}"
+                                has_violation = any(v[0] == worker_label for v in violations)
+                                color = (40, 40, 180) if has_violation else (40, 180, 40)
+                            elif det.class_name == "helmet":
+                                color = (180, 180, 40)
+                            elif det.class_name == "vest":
+                                color = (180, 40, 180)
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                            label = f"{det.class_name} ({det.confidence:.2f})"
+                            cv2.putText(frame, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+                    cv2.putText(frame, f"FPS: {target_fps} | Latency: {elapsed_ms:.1f}ms",
+                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
                     ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     if ret:
@@ -242,12 +254,29 @@ class VideoStreamProducer:
                             except queue.Empty:
                                 pass
 
+                    consecutive_errors = 0
                     elapsed = time.perf_counter() - frame_start
                     time.sleep(max(0.0, interval - elapsed))
-                except Exception as exc:
+                except Exception:
+                    consecutive_errors += 1
+                    logger.exception(
+                        "Error in video producer frame loop (consecutive=%d)", consecutive_errors
+                    )
+                    if consecutive_errors >= 20:
+                        logger.critical(
+                            "Video producer failing repeatedly (%d consecutive errors); "
+                            "stopping thread rather than spinning silently.",
+                            consecutive_errors,
+                        )
+                        raise
                     time.sleep(0.1)
         except Exception as exc:
             self._error = exc
+            logger.exception("Video producer thread exiting due to unrecoverable error")
+        finally:
+            if cap is not None:
+                cap.release()
+                logger.info("Released video capture device")
 
 
 class EdgeRuntime:
@@ -260,6 +289,8 @@ class EdgeRuntime:
         self.audit = AuditLogger(
             audit_dir=settings.logging.audit_dir,
             node_id=settings.edge.node_id,
+            max_bytes=settings.logging.audit_max_bytes,
+            backup_count=settings.logging.audit_backup_count,
         )
         self.plc = PlcRelay(
             gpio=settings.control.estop_gpio,
@@ -268,23 +299,9 @@ class EdgeRuntime:
             use_gpio=settings.control.use_gpio,
             trip_delay_ms=settings.control.trip_delay_ms,
         )
-        # Single shared detection + geofence engine so the overlay, the event
-        # loop, and both video streams all reason about the SAME world.
-        self.detector = build_detector(settings.vision)
-        self.geofences = GeofenceEngine.from_yaml(settings.vision.geofences_file)
-        # One inference owner writes here; both video producers render it.
-        self.detection_state = DetectionState()
-        self.video_stream = VideoStreamProducer(
-            settings,
-            draw_zones=True,
-            detector=self.detector,
-            geofences=self.geofences,
-            shared_state=self.detection_state,
-        )
-        self.detection_stream = VideoStreamProducer(
-            settings,
-            draw_zones=False,
-            detector=self.detector,
-            geofences=self.geofences,
-            shared_state=self.detection_state,
-        )
+        self.video_stream = VideoStreamProducer(settings, metrics=self.metrics)
+
+    def shutdown(self) -> None:
+        """Best-effort graceful shutdown; call from a FastAPI shutdown event."""
+        logger.info("EdgeRuntime shutting down")
+        self.video_stream.stop()

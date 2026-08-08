@@ -27,6 +27,7 @@ import asyncio
 import logging
 import queue
 import threading
+from pathlib import Path
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -35,7 +36,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from .config import Settings
+from .config import Settings, resolve_video_source
 from .control.audit import AuditLogger
 from .control.plc import PlcRelay
 from .events.broker import EventBroker
@@ -98,6 +99,10 @@ class VideoStreamProducer:
         self.settings = settings
         self.vision_cfg = settings.vision
         self.video_cfg = settings.video
+        self.video_source = resolve_video_source(
+            self.video_cfg.source,
+            project_root=Path(__file__).resolve().parents[2],
+        )
         self.metrics = metrics
         self.detector = build_detector(self.vision_cfg)
         self.geofences = GeofenceEngine.from_yaml(self.vision_cfg.geofences_file)
@@ -121,7 +126,7 @@ class VideoStreamProducer:
         return {
             "ready": self.is_alive and self._error is None and self._source_error is None,
             "alive": self.is_alive,
-            "source": str(self.video_cfg.source),
+            "source": str(self.video_source),
             "synthetic_camera": bool(self.video_cfg.synthetic_camera),
             "error": str(self._error or self._source_error) if (self._error or self._source_error) is not None else None,
         }
@@ -153,9 +158,9 @@ class VideoStreamProducer:
         cap = None
         try:
             if not self.video_cfg.synthetic_camera:
-                cap = cv2.VideoCapture(self.video_cfg.source)
+                cap = cv2.VideoCapture(self.video_source)
                 if not cap.isOpened():
-                    error = RuntimeError(f"could not open video source: {self.video_cfg.source!r}")
+                    error = RuntimeError(f"could not open video source: {self.video_source!r}")
                     self._source_error = error
                     logger.error(
                         "%s; using generated frames until the source is fixed",

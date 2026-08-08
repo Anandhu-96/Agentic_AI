@@ -2,8 +2,17 @@
 
 from unittest.mock import patch
 
-from isip.config import Settings
+from isip.config import Settings, resolve_video_source
 from isip.runtime import VideoStreamProducer
+
+
+def test_resolve_video_source_uses_project_root(tmp_path):
+    media = tmp_path / "demo.mp4"
+    media.write_bytes(b"video")
+
+    resolved = resolve_video_source("demo.mp4", project_root=tmp_path)
+
+    assert resolved == str(media.resolve())
 
 
 def test_video_status_reports_not_started_state():

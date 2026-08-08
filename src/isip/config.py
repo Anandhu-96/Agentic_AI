@@ -5,6 +5,30 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+
+def resolve_video_source(source: Any, project_root: Optional[Path] = None) -> Any:
+    """Resolve repository media paths without changing camera/device sources.
+
+    Config uses a repository-relative MP4 path. Services are often launched from
+    another working directory, so try the caller's cwd and the project root.
+    Numeric camera indexes and URL-like sources are returned unchanged.
+    """
+    if not isinstance(source, str) or not source.strip():
+        return source
+    if "://" in source or source.isdigit():
+        return source
+
+    path = Path(source).expanduser()
+    if path.is_absolute():
+        return str(path)
+    candidates = [Path.cwd() / path]
+    if project_root is not None:
+        candidates.append(project_root / path)
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return source
+
 import yaml
 from pydantic import BaseModel, Field
 

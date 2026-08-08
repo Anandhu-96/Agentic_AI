@@ -52,9 +52,9 @@ tailwind.config = {
   <!-- ================= SIMULATION MODE NOTICE ================= -->
   <div id="sim-notice" class="hidden items-center gap-3 border border-amber-500/40 bg-amber-500/10 rounded-xl px-4 py-2.5 text-[11px] text-amber-300">
     <i data-lucide="flask-conical" class="w-4 h-4 shrink-0"></i>
-    <span><strong>SIMULATION MODE</strong> — no edge node detected on <code class="text-amber-200">127.0.0.1:8080</code>, so video, telemetry
+    <span><strong>SIMULATION MODE</strong> — no edge node detected at <code class="text-amber-200">127.0.0.1:8080</code>, so video, telemetry
       and events are locally emulated. Worker tracking devices are simulated in both modes. For the live system run
-      <code class="text-amber-200">python scripts/run_edge.py</code> and refresh.</span>
+      <code class="text-amber-200">python scripts/run_edge.py</code> — or set this machine's LAN IP in the EDGE NODE field above — and refresh.</span>
     <button id="btn-dismiss-sim" class="ml-auto text-amber-400 hover:text-amber-200 text-[10px] px-2 py-1 rounded border border-amber-500/40">DISMISS</button>
   </div>
 
@@ -109,6 +109,28 @@ tailwind.config = {
       </span>
     </div>
   </header>
+
+  <!-- ================= SYSTEM WORLD / EDGE NODE CONNECTION ================= -->
+  <div class="border border-slate-800 rounded-xl bg-slate-900/70 px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2">
+    <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
+      <i data-lucide="sliders-horizontal" class="w-4 h-4 text-cyan-400"></i>SYSTEM WORLD
+    </span>
+    <div class="flex rounded-lg border border-slate-700 overflow-hidden">
+      <button id="world-sim" class="px-4 py-1.5 text-[10px] font-bold tracking-wide flex items-center gap-1.5 border-r border-slate-700">
+        <i data-lucide="flask-conical" class="w-3.5 h-3.5"></i>SIMULATION
+      </button>
+      <button id="world-real" class="px-4 py-1.5 text-[10px] font-bold tracking-wide flex items-center gap-1.5">
+        <i data-lucide="usb" class="w-3.5 h-3.5"></i>REAL WORLD (SERIAL)
+      </button>
+    </div>
+    <span id="world-status" class="text-[10px] text-slate-400">SIMULATION MODE</span>
+
+    <span class="ml-auto flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
+      <i data-lucide="plug-zap" class="w-3.5 h-3.5"></i>EDGE NODE
+      <input id="api-input" spellcheck="false" class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-300 w-64 font-mono" />
+      <button id="btn-apply-api" class="px-3 py-1 rounded border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 text-[10px] font-bold hover:bg-cyan-500/20 transition">APPLY</button>
+    </span>
+  </div>
 
   <!-- ================= KPI STRIP ================= -->
   <section class="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2">
@@ -174,6 +196,7 @@ tailwind.config = {
           <span>IOU 0.5 / conf 0.45</span>
         </div>
         <div class="text-[10px] text-slate-600 px-1">Zone overlays are rendered in the independent tracking view below.</div>
+        <div class="text-[10px] text-cyan-500/70 px-1">Watching from another device? Set the EDGE NODE field above to this machine's LAN IP (e.g. <span class="font-mono">192.168.x.x:8080</span>) and press APPLY.</div>
       </div>
     </section>
 
@@ -475,8 +498,33 @@ tailwind.config = {
    - Otherwise it runs a full local simulation so the product demo works
      identically from static hosting (GitHub Pages).
    ===================================================================== */
-const API_BASE = 'http://127.0.0.1:8080/edge';
 const ASSETS = '__A__'; // build-time asset prefix ('' or 'dashboard/')
+const DEFAULT_API = 'http://127.0.0.1:8080/edge';
+
+/* Resolve the edge-node address so the dashboard also works from other
+   devices on the LAN (127.0.0.1 only ever points back at the viewer).
+   1. ?api=HOST[:PORT] URL override
+   2. localStorage override (set via the EDGE NODE field)
+   3. auto: when served over http from a non-loopback host, use that host
+   4. default localhost                                                        */
+function resolveApiBase() {
+  try {
+    const q = new URLSearchParams(location.search).get('api');
+    if (q) {
+      let v = q;
+      if (!/^https?:\/\//i.test(v)) v = 'http://' + v;
+      return v.replace(/\/+$/, '') + '/edge';
+    }
+    const saved = localStorage.getItem('isip_api');
+    if (saved) return saved;
+    const host = location.hostname;
+    if (host && host !== 'localhost' && host !== '127.0.0.1' && location.protocol === 'http:') {
+      return 'http://' + host + ':8080/edge';
+    }
+  } catch (e) {}
+  return DEFAULT_API;
+}
+let API_BASE = resolveApiBase();
 
 const $ = (id) => document.getElementById(id);
 const now = () => Math.floor(Date.now() / 1000);
@@ -486,7 +534,9 @@ function initIcons() { try { lucide.createIcons(); } catch (e) {} }
 
 /* ================= STATE ================= */
 const state = {
-  mode: 'SIM',                    // LIVE | SIM
+  mode: 'SIM',                    // LIVE | SIM (backend availability)
+  world: 'SIM',                   // SIM | REAL (device data source)
+  serialSource: 'none',           // serial | emulated | none
   estop: false,
   intrusion: false,
   manualBreach: false,
@@ -513,6 +563,11 @@ const state = {
 };
 
 const MAXPTS = 40;
+
+try {
+  const w = localStorage.getItem('isip_world');
+  if (w === 'REAL' || w === 'SIM') state.world = w;
+} catch (e) {}
 
 function seedWorkers() {
   state.workers = [
@@ -725,6 +780,14 @@ function selected() {
 }
 
 function tickDevices() {
+  // REAL WORLD: positions come from the serial-port tracker (fetchTrackers).
+  if (state.world === 'REAL') {
+    updateMachineDanger();
+    updateBreach();
+    renderDevices();
+    $('k-devices').textContent = state.devices.filter(d => d.signal).length;
+    return;
+  }
   state.devices.forEach(d => {
     if (!d.signal) return;
     if (state.autoDrift) {
@@ -823,6 +886,89 @@ function rechargeSelected() {
   logDevice(`[CTRL] ${d.id} battery recharged to 100%`, 'text-emerald-300');
   streamEvent('DEVICE_RECHARGE', 'INFO', { device: d.id });
   renderDevices();
+}
+
+/* ================= WORLD MODE (SIMULATION vs REAL WORLD / SERIAL) ================= */
+function setWorld(mode) {
+  state.world = mode;
+  try { localStorage.setItem('isip_world', mode); } catch (e) {}
+  const on = 'px-4 py-1.5 text-[10px] font-bold tracking-wide flex items-center gap-1.5 transition border-r border-slate-700 bg-cyan-500/20 text-cyan-300';
+  const off = 'px-4 py-1.5 text-[10px] font-bold tracking-wide flex items-center gap-1.5 transition border-r border-slate-700 bg-slate-900 text-slate-400';
+  const onReal = 'px-4 py-1.5 text-[10px] font-bold tracking-wide flex items-center gap-1.5 transition bg-rose-500/20 text-rose-300';
+  const offReal = 'px-4 py-1.5 text-[10px] font-bold tracking-wide flex items-center gap-1.5 transition bg-slate-900 text-slate-400';
+  $('world-sim').className = mode === 'SIM' ? on : off;
+  $('world-real').className = mode === 'REAL' ? onReal : offReal;
+  if (mode === 'REAL') {
+    renderSerialStatus();
+    fetchTrackers();
+  } else {
+    $('world-status').textContent = 'SIMULATION MODE';
+    $('world-status').className = 'text-[10px] text-slate-400';
+    renderDevices();
+  }
+  initIcons();
+}
+
+function renderSerialStatus() {
+  const st = $('world-status');
+  if (state.world !== 'REAL') { st.textContent = 'SIMULATION MODE'; return; }
+  const online = state.devices.filter(d => d.signal).length;
+  if (state.serialSource === 'serial') { st.textContent = `REAL WORLD — SERIAL LIVE (${online} devices)`; st.className = 'text-[10px] text-emerald-300'; }
+  else if (state.serialSource === 'emulated') { st.textContent = `REAL WORLD — SERIAL EMULATED (${online} devices)`; st.className = 'text-[10px] text-emerald-300'; }
+  else { st.textContent = 'REAL WORLD — WAITING FOR SERIAL DATA…'; st.className = 'text-[10px] text-amber-300'; }
+}
+
+async function fetchTrackers() {
+  if (state.world !== 'REAL') return;
+  try {
+    const r = await fetch(API_BASE + '/trackers');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    state.serialSource = data.source || 'none';
+    const feed = data.devices || [];
+    const seen = new Set(feed.map(p => p.id));
+    const map = new Map(state.devices.map(d => [d.id, d]));
+    feed.forEach(p => {
+      let d = map.get(p.id);
+      if (!d) {
+        d = { id: p.id, worker: p.worker || p.id, x: 0.5, y: 0.5, battery: 100, signal: true, pingMs: 2000, acc: 0, lowBatt: false, lastPing: 0 };
+        state.devices.push(d);
+        map.set(p.id, d);
+      }
+      d.worker = p.worker || d.worker;
+      d.x = p.x != null ? clamp(p.x, 0, 1) : d.x;
+      d.y = p.y != null ? clamp(p.y, 0, 1) : d.y;
+      d.battery = p.battery != null ? p.battery : d.battery;
+      d.signal = p.signal !== false;
+      d.lastPing = p.last_ping || 0;
+      if (d.battery < 15 && !d.lowBatt) {
+        d.lowBatt = true;
+        addAlert('batt-' + d.id, 'WARNING', `Device ${d.id} battery critically low (${Math.round(d.battery)}%).`);
+      } else if (d.battery >= 20) {
+        d.lowBatt = false;
+        clearAlert('batt-' + d.id);
+      }
+    });
+    state.devices.forEach(d => { if (!seen.has(d.id)) d.signal = false; });
+    updateMachineDanger();
+    updateBreach();
+    renderDevices();
+    renderSerialStatus();
+    $('k-devices').textContent = state.devices.filter(d => d.signal).length;
+  } catch (err) {
+    state.serialSource = 'none';
+    renderSerialStatus();
+  }
+}
+
+function applyApi() {
+  const v = ($('api-input').value || '').trim();
+  if (!v) { localStorage.removeItem('isip_api'); location.reload(); return; }
+  let url = v;
+  if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+  url = url.replace(/\/+$/, '') + '/edge';
+  try { localStorage.setItem('isip_api', url); } catch (e) {}
+  location.reload();
 }
 
 /* ================= KPIs ================= */
@@ -1413,11 +1559,17 @@ $('btn-drift').addEventListener('click', toggleDrift);
 $('btn-device-breach').addEventListener('click', breachSelectedDevice);
 $('btn-signal').addEventListener('click', toggleSignal);
 $('btn-recharge').addEventListener('click', rechargeSelected);
+$('world-sim').addEventListener('click', () => setWorld('SIM'));
+$('world-real').addEventListener('click', () => setWorld('REAL'));
+$('btn-apply-api').addEventListener('click', applyApi);
+$('api-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') applyApi(); });
 
 /* ================= BOOT ================= */
 resizeMap();
 requestAnimationFrame(drawMap);
 initIcons();
+$('api-input').value = API_BASE;
+setWorld(state.world);
 renderKpis();
 renderPpe();
 renderZones();
@@ -1426,6 +1578,7 @@ renderSensors();
 renderRul();
 renderAlerts();
 setInterval(tickDevices, 1000);
+setInterval(fetchTrackers, 1500);
 probeBackend();
 </script>
 </body>

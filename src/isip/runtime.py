@@ -43,6 +43,7 @@ from .integrations.supabase import SupabaseClient
 from .vision.detector import build_detector
 from .vision.geofence import GeofenceEngine
 from .vision.ppe import evaluate_ppe
+from .vision.tracker_serial import SerialDeviceTracker
 
 logger = logging.getLogger(__name__)
 
@@ -303,8 +304,10 @@ class EdgeRuntime:
             trip_delay_ms=settings.control.trip_delay_ms,
         )
         self.video_stream = VideoStreamProducer(settings, metrics=self.metrics)
+        self.serial_tracker = SerialDeviceTracker(settings.tracking.serial)
 
     def shutdown(self) -> None:
         """Best-effort graceful shutdown; call from a FastAPI shutdown event."""
         logger.info("EdgeRuntime shutting down")
+        self.serial_tracker.stop()
         self.video_stream.stop()

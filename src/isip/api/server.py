@@ -169,6 +169,12 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
         m["node_id"] = runtime.settings.edge.node_id
         return m
 
+    @app.get(f"{prefix}/trackers", tags=["edge"])
+    def trackers() -> dict:
+        """Latest worker tracking-device positions (serial / emulated)."""
+        logger.debug("trackers requested")
+        return runtime.serial_tracker.snapshot()
+
     @app.get(f"{prefix}/events", tags=["edge"])
     def events(limit: int = Query(default=50, ge=1, le=500)) -> List[BaseEvent]:
         logger.debug("events requested limit=%d", limit)

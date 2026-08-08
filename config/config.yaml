@@ -86,6 +86,18 @@ logging:
   audit_max_bytes: 10485760
   audit_backup_count: 3
 
+tracking:
+  enabled: true
+  max_age: 10
+  iou_threshold: 0.3
+  serial:
+    enabled: true
+    port: ""                    # e.g. COM3 or /dev/ttyUSB0 (empty = emulated stream)
+    baudrate: 115200
+    timeout_s: 1.0
+    emulate: true               # fall back to emulated device pings when no port
+    ping_interval_s: 1.0
+
 supabase:
   url: "https://gelwsxvlhzhumgjmnbtx.supabase.co"
   key: "sb_publishable__t0RhfRMXAbhCL5Ut5269A_qSX7ueJ7"

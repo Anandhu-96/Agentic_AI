@@ -304,6 +304,40 @@ class EdgeOrchestrator:
             await asyncio.sleep(1.0)
         logger.info("telemetry loop stopped")
 
+    async def _tracker_loop(self) -> None:
+        """Publish worker-device pings (serial / emulated) as broker events."""
+        last: Dict[str, tuple] = {}
+        while not self._shutdown.is_set():
+            try:
+                snap = self.runtime.serial_tracker.snapshot()
+                for d in snap["devices"]:
+                    key = (
+                        d.get("id", ""),
+                        round(d.get("x", 0.0), 3),
+                        round(d.get("y", 0.0), 3),
+                        round(d.get("battery", 0.0), 1),
+                    )
+                    if last.get(d.get("id")) != key:
+                        last[d.get("id")] = key
+                        await self.runtime.broker.publish(
+                            BaseEvent(
+                                event_type=EventType.DEVICE_PING,
+                                severity=Severity.INFO,
+                                payload={
+                                    "id": d.get("id"),
+                                    "worker": d.get("worker"),
+                                    "x": d.get("x"),
+                                    "y": d.get("y"),
+                                    "battery": d.get("battery"),
+                                    "source": snap.get("source"),
+                                },
+                            )
+                        )
+            except Exception as exc:  # pragma: no cover
+                logger.debug("tracker loop error: %s", exc)
+            await asyncio.sleep(1.0)
+        logger.debug("tracker loop stopped")
+
     # ---------------------------------------------------------------- support
 
     def _audit(self, event: BaseEvent) -> None:
@@ -385,9 +419,11 @@ class EdgeOrchestrator:
         self.runtime.video_stream.start()
         if self.runtime.video_stream.error is not None:
             logger.error("video stream failed to start: %s", self.runtime.video_stream.error)
+        self.runtime.serial_tracker.start()
         self._tasks = [
             asyncio.create_task(self._inference_loop(), name="inference"),
             asyncio.create_task(self._telemetry_loop(), name="telemetry"),
+            asyncio.create_task(self._tracker_loop(), name="tracker"),
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat"),
         ]
         if self._supabase_store is not None:

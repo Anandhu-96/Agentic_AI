@@ -41,10 +41,20 @@ class VisionConfig(BaseModel):
     segmentation: SegmentationConfig = Field(default_factory=SegmentationConfig)
 
 
+class SerialTrackerConfig(BaseModel):
+    enabled: bool = True
+    port: str = ""  # e.g. COM3 (Windows) or /dev/ttyUSB0 (Linux); empty = emulate
+    baudrate: int = 115200
+    timeout_s: float = 1.0
+    emulate: bool = True  # fall back to an emulated device stream when no port
+    ping_interval_s: float = 1.0
+
+
 class TrackingConfig(BaseModel):
     enabled: bool = True
     max_age: int = 10
     iou_threshold: float = 0.3
+    serial: SerialTrackerConfig = Field(default_factory=SerialTrackerConfig)
 
 
 class MachineDangerConfig(BaseModel):

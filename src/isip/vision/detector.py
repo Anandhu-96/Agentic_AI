@@ -347,7 +347,7 @@ class SyntheticDetector(ObjectDetector):
             x1 + w * 0.042, y1 + h * 0.10, w, h,
         ))
 
-        # Worker 2: moves in and out of EXCLUSION_ZONE_B, no helmet.
+        # Worker 2: an extra worker with no helmet (PPE violation demo).
         ey = 0.05 + 0.25 * (0.5 + 0.5 * math.sin(t / 23.0))
         ex = 0.17
         px1, py1 = ex * w, ey * h

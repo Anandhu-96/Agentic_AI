@@ -60,6 +60,13 @@ class GeofenceZone(BaseModel):
         ys = [p[1] for p in self.polygon]
         return (sum(xs) / len(xs), sum(ys) / len(ys))
 
+    def as_pixels(self, frame_width: int, frame_height: int) -> List[Tuple[int, int]]:
+        """Scale the normalized polygon to pixel coordinates for drawing."""
+        return [
+            (int(round(x * frame_width)), int(round(y * frame_height)))
+            for x, y in self.polygon
+        ]
+
 
 class GeofenceEngine:
     """Loads geofence definitions and tests detections against them."""
@@ -86,3 +93,26 @@ class GeofenceEngine:
             if point_in_polygon(point, zone.polygon):
                 return zone
         return None
+
+    def overlay_polys(self, w: int = 1280, h: int = 720, normalize: bool = False) -> Dict[str, dict]:
+        """Serializable zone geometry used by dashboards/overlays.
+
+        Every renderer should scale the polygon by the target frame width/height
+        exactly once so all visuals agree with the geofence engine's own
+        point-in-polygon tests. ``normalize=True`` returns the raw 0..1 polygon
+        for clients that scale to their own canvas size.
+        """
+        return {
+            name: {
+                "severity": zone.severity,
+                "action": zone.action,
+                "description": zone.description,
+                "polygon": (
+                    [[float(x), float(y)] for x, y in zone.polygon]
+                    if normalize
+                    else [[round(x * w, 1), round(y * h, 1)] for x, y in zone.polygon]
+                ),
+                "centroid": zone.centroid,
+            }
+            for name, zone in self._zones.items()
+        }

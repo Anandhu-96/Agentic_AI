@@ -135,6 +135,24 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
     def config() -> dict:
         return runtime.settings.model_dump()
 
+    @app.get(f"{prefix}/geofences", tags=["edge"])
+    def geofences() -> dict:
+        """Normalized geofence geometry so dashboards can draw the real polygons."""
+        return {"zones": runtime.geofences.overlay_polys(normalize=True)}
+
+    @app.get(f"{prefix}/zones", tags=["edge"])
+    def zones() -> dict:
+        """Live zone state: severity + authoritative active flags + geometry."""
+        active = set(runtime.video_stream.latest_active_zones)
+        active |= set(runtime.detection_stream.latest_active_zones)
+        overlay = runtime.geofences.overlay_polys(
+            runtime.settings.video.width,
+            runtime.settings.video.height,
+        )
+        for name, info in overlay.items():
+            info["active"] = name in active
+        return {"zones": overlay}
+
     @app.get(f"{prefix}/video-feed", tags=["edge"])
     async def video_feed() -> Response:
         producer = runtime.video_stream
@@ -159,6 +177,18 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
     @app.get(f"{prefix}/video-snapshot", tags=["edge"])
     async def video_snapshot() -> Response:
         frame_bytes = runtime.video_stream.get_frame(timeout=1.0)
+        if frame_bytes is None:
+            frame_bytes = b""
+        return Response(
+            content=frame_bytes,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+
+    @app.get(f"{prefix}/video-snapshot/detections", tags=["edge"])
+    async def video_snapshot_detections() -> Response:
+        """Snapshot from the detection-only stream (no zone overlay)."""
+        frame_bytes = runtime.detection_stream.get_frame(timeout=1.0)
         if frame_bytes is None:
             frame_bytes = b""
         return Response(

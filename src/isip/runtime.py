@@ -8,7 +8,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Set
 
 import cv2
 import numpy as np
@@ -17,7 +17,7 @@ from .config import Settings
 from .control.audit import AuditLogger
 from .control.plc import PlcRelay
 from .events.broker import EventBroker
-from .vision.detector import build_detector
+from .vision.detector import ObjectDetector, build_detector
 from .vision.geofence import GeofenceEngine
 from .vision.ppe import evaluate_ppe
 
@@ -45,20 +45,64 @@ class RuntimeMetrics:
             }
 
 
+def draw_zones(frame: np.ndarray, geofences: GeofenceEngine, active_zones: Set[str]) -> None:
+    """Overlay geofence polygons on a BGR frame.
+
+    Single source of truth for zone rendering: every caller (video streams,
+    snapshot producers) scales the normalized polygons by the frame's own size
+    so the drawn boundaries always match the engine's point-in-polygon tests.
+    """
+    h, w = frame.shape[:2]
+    for zone in geofences.zones.values():
+        pts = np.array([(x * w, y * h) for x, y in zone.polygon], dtype=np.float32)
+        if len(pts) < 3:
+            continue
+        pts = pts.astype(int)
+        is_active = zone.name in active_zones
+        base_color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
+        line_thickness = 2 if is_active else 1
+        cv2.polylines(frame, [pts], isClosed=True, color=base_color,
+                      thickness=line_thickness, lineType=cv2.LINE_AA)
+        for i, (px, py) in enumerate(pts):
+            radius = 4 if is_active else 3
+            cv2.circle(frame, (int(px), int(py)), radius, base_color, -1, lineType=cv2.LINE_AA)
+            cv2.circle(frame, (int(px), int(py)), radius + 2, (255, 255, 255), 1, lineType=cv2.LINE_AA)
+        label_y = max(16, int(pts[:, 1].min()) - 8)
+        label_text = f"{zone.name} [ACTIVE]" if is_active else zone.name
+        (tw, th), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        cv2.rectangle(frame, (int(pts[:, 0].min()), label_y - th - 4),
+                      (int(pts[:, 0].min()) + tw + 6, label_y + 4), (0, 0, 0), -1)
+        cv2.putText(frame, label_text, (int(pts[:, 0].min()) + 3, label_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, base_color if is_active else (200, 200, 200), 1)
+
+    if active_zones:
+        banner = f"ZONE BREACH: {', '.join(sorted(active_zones))}"
+        cv2.rectangle(frame, (0, 0), (w, 32), (0, 0, 180), -1)
+        cv2.putText(frame, banner, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+
 class VideoStreamProducer:
     """Background thread that continuously produces MJPEG frames."""
 
-    def __init__(self, settings: Settings, *, draw_zones: bool = True) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        draw_zones: bool = True,
+        detector: ObjectDetector | None = None,
+        geofences: GeofenceEngine | None = None,
+    ) -> None:
         self.settings = settings
         self.vision_cfg = settings.vision
         self.video_cfg = settings.video
-        self.detector = build_detector(self.vision_cfg)
-        self.geofences = GeofenceEngine.from_yaml(self.vision_cfg.geofences_file)
+        self.detector = detector or build_detector(self.vision_cfg)
+        self.geofences = geofences or GeofenceEngine.from_yaml(self.vision_cfg.geofences_file)
         self._draw_zones = draw_zones
         self._queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=20)
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._error: Optional[Exception] = None
+        self.latest_active_zones: Set[str] = set()
 
     @property
     def error(self) -> Optional[Exception]:
@@ -146,37 +190,11 @@ class VideoStreamProducer:
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
 
                         if self._draw_zones:
-                            for zone in self.geofences.zones.values():
-                                pts = np.array(zone.polygon, dtype=np.float32)
-                                pts[:, 0] *= w
-                                pts[:, 1] *= h
-                                pts = pts.astype(int)
-                                if len(pts) < 3:
-                                    continue
-                                is_active = zone.name in active_zones
-                                base_color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
-                                line_thickness = 2 if is_active else 1
-                                cv2.polylines(frame, [pts], isClosed=True, color=base_color,
-                                              thickness=line_thickness, lineType=cv2.LINE_AA)
-                                for i, (px, py) in enumerate(pts):
-                                    radius = 4 if is_active else 3
-                                    cv2.circle(frame, (int(px), int(py)), radius, base_color, -1, lineType=cv2.LINE_AA)
-                                    cv2.circle(frame, (int(px), int(py)), radius + 2, (255, 255, 255), 1, lineType=cv2.LINE_AA)
-                                label_y = max(16, int(pts[:, 1].min()) - 8)
-                                label_text = f"{zone.name} [ACTIVE]" if is_active else zone.name
-                                (tw, th), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-                                cv2.rectangle(frame, (int(pts[:, 0].min()), label_y - th - 4),
-                                              (int(pts[:, 0].min()) + tw + 6, label_y + 4), (0, 0, 0), -1)
-                                cv2.putText(frame, label_text, (int(pts[:, 0].min()) + 3, label_y),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, base_color if is_active else (200, 200, 200), 1)
-
-                            if active_zones:
-                                banner = f"ZONE BREACH: {', '.join(sorted(active_zones))}"
-                                cv2.rectangle(frame, (0, 0), (w, 32), (0, 0, 180), -1)
-                                cv2.putText(frame, banner, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                            draw_zones(frame, self.geofences, active_zones)
 
                         cv2.putText(frame, f"FPS: {1000.0/max(elapsed_ms,1.0):.1f} | Latency: {elapsed_ms:.1f}ms",
                                     (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                        self.latest_active_zones = active_zones
 
                     ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     if ret:
@@ -216,5 +234,19 @@ class EdgeRuntime:
             use_gpio=settings.control.use_gpio,
             trip_delay_ms=settings.control.trip_delay_ms,
         )
-        self.video_stream = VideoStreamProducer(settings, draw_zones=True)
-        self.detection_stream = VideoStreamProducer(settings, draw_zones=False)
+        # Single shared detection + geofence engine so the overlay, the event
+        # loop, and both video streams all reason about the SAME world.
+        self.detector = build_detector(settings.vision)
+        self.geofences = GeofenceEngine.from_yaml(settings.vision.geofences_file)
+        self.video_stream = VideoStreamProducer(
+            settings,
+            draw_zones=True,
+            detector=self.detector,
+            geofences=self.geofences,
+        )
+        self.detection_stream = VideoStreamProducer(
+            settings,
+            draw_zones=False,
+            detector=self.detector,
+            geofences=self.geofences,
+        )

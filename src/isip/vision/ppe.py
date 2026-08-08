@@ -34,16 +34,23 @@ def evaluate_ppe(
     all_detections: List[Detection],
     config: VisionConfig,
     iou_threshold: float = 0.15,
+    worker_ids: List[str] | None = None,
 ) -> List[Tuple[str, str, float]]:
     """Return ``(worker_label, missing_gear, confidence)`` violations.
 
     A worker is considered compliant for a gear class if any detection of that
-    class overlaps its bounding box beyond ``iou_threshold``.
+    class overlaps its bounding box beyond ``iou_threshold``. When
+    ``worker_ids`` is provided it overrides the position-derived label so events
+    keep a stable identity across frames.
     """
     violations: List[Tuple[str, str, float]] = []
     required = set(config.ppe_required)
-    for worker in workers:
-        label = f"W-{int(worker.bbox_center[0] * 1000)}"
+    for idx, worker in enumerate(workers):
+        label = (
+            worker_ids[idx]
+            if worker_ids is not None and idx < len(worker_ids)
+            else f"W-{int(worker.bbox_center[0] * 1000)}"
+        )
         present: set[str] = set()
         for det in all_detections:
             if det.class_name in required and _matches(worker, det, iou_threshold):

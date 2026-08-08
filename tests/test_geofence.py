@@ -49,3 +49,25 @@ def test_engine_from_yaml(tmp_path):
     engine = GeofenceEngine.from_yaml(p)
     assert engine.locate((0.5, 0.5)).name == "ZONE_A"
     assert engine.locate((0.99, 0.99)) is None
+
+
+def test_as_pixels_scales_normalized_polygon():
+    zone = {"severity": "CRITICAL", "polygon": [[0.25, 0.5], [0.75, 0.5], [0.75, 1.0], [0.25, 1.0]]}
+    engine = GeofenceEngine({"ZONE_A": zone})
+    assert engine.zones["ZONE_A"].as_pixels(1280, 720) == [(320, 360), (960, 360), (960, 720), (320, 720)]
+
+
+def test_overlay_polys_includes_geometry_and_metadata():
+    engine = GeofenceEngine({
+        "ZONE_A": {"severity": "CRITICAL", "action": "TRIP_RELAY", "polygon": [[0, 0], [1, 0], [1, 1]]}
+    })
+    out = engine.overlay_polys(w=100, h=50)
+    assert "ZONE_A" in out
+    assert out["ZONE_A"]["severity"] == "CRITICAL"
+    assert out["ZONE_A"]["action"] == "TRIP_RELAY"
+    assert out["ZONE_A"]["polygon"][0] == [0.0, 0.0]
+    assert out["ZONE_A"]["polygon"][2] == [100.0, 50.0]
+
+    # normalized mode returns raw 0..1 polygon
+    normalized = engine.overlay_polys(normalize=True)
+    assert normalized["ZONE_A"]["polygon"] == [[0, 0], [1, 0], [1, 1]]

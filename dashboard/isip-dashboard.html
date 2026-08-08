@@ -113,7 +113,8 @@ tailwind.config = {
       </div>
 
       <div id="video-wrap" class="relative aspect-video bg-[#0b1118] overflow-hidden scanline">
-        <img id="video-feed" src="http://127.0.0.1:8080/edge/video-snapshot" class="absolute inset-0 w-full h-full object-contain" alt="Live Video Feed" />
+        <img id="video-feed" src="http://127.0.0.1:8080/edge/video-snapshot/detections" class="absolute inset-0 w-full h-full object-contain" alt="Live Video Feed" />
+        <canvas id="video-canvas" class="absolute inset-0 w-full h-full object-contain pointer-events-none" width="1280" height="720"></canvas>
 
         <div id="breach-banner" class="hidden absolute top-3 left-1/2 -translate-x-1/2 z-20 px-4 py-2 rounded-md border-2 border-rose-500 bg-rose-600 text-white font-bold text-xs tracking-widest whitespace-nowrap shadow-xl shadow-rose-900/40">
           CRITICAL: ZONE BREACH DETECTED
@@ -315,47 +316,88 @@ function appendLog(event_type, severity, payload = {}) {
 /* ================= CANVAS VIDEO FEED ================= */
 const cv = $('video-canvas');
 const ctx = cv.getContext('2d');
+let geofenceZones = [];      // {name, severity, polygon: [[nx,ny],...]} normalized 0..1
+let activeZones = new Set();
 function resizeCanvas() {
   const wrap = $('video-wrap');
   cv.width = wrap.clientWidth || 640;
   cv.height = wrap.clientHeight || 360;
 }
 window.addEventListener('resize', resizeCanvas);
-function dz() {
-  const w = cv.width, h = cv.height;
-  return { x: w * 0.52, y: h * 0.58, w: w * 0.22, h: h * 0.18 };
-}
-function drawHazard(d, t) {
-  const { x, y, w, h } = d;
-  const color = state.intrusion ? '#f43f5e' : '#f59e0b';
-  ctx.save();
-  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-  ctx.globalAlpha = state.intrusion ? 0.35 : 0.14;
-  ctx.strokeStyle = color; ctx.lineWidth = 1;
-  for (let i = -h; i < w + h; i += 10) {
-    ctx.beginPath(); ctx.moveTo(x + i, y); ctx.lineTo(x + i + h, y + h); ctx.stroke();
+
+async function fetchGeofences() {
+  try {
+    const resp = await fetch('http://127.0.0.1:8080/edge/geofences', { mode: 'cors' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    geofenceZones = Object.entries(data.zones || {}).map(([id, z]) => ({
+      id, severity: z.severity, polygon: z.polygon || [],
+    }));
+  } catch (e) {
+    geofenceZones = [];
   }
-  ctx.restore();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 2 + Math.sin(t / 150) * (state.intrusion ? 1.5 : 0.4);
-  ctx.strokeRect(x, y, w, h);
-  ctx.fillStyle = state.intrusion ? '#fecdd3' : '#fde68a';
-  ctx.font = 'bold 10px monospace';
-  ctx.fillText(state.intrusion ? '⚠ ZONE BREACH' : 'RESTRICTED HAZARD ZONE', x, y - 6);
 }
-function drawBox(x, y, w, h, color, label, conf) {
-  x = Math.max(0, Math.min(cv.width - w, x));
-  y = Math.max(0, Math.min(cv.height - h, y));
-  ctx.strokeStyle = color; ctx.lineWidth = 2;
-  ctx.strokeRect(x, y, w, h);
-  ctx.font = 'bold 9px monospace';
-  const labelTxt = label + ' (' + conf.toFixed(2) + ')';
-  const tw = ctx.measureText(labelTxt).width + 8;
-  ctx.fillStyle = color;
-  ctx.fillRect(x - 2, y - 14, tw, 14);
-  ctx.fillStyle = '#0b1118';
-  ctx.fillText(labelTxt, x + 2, y - 4);
+
+async function fetchZones() {
+  try {
+    const resp = await fetch('http://127.0.0.1:8080/edge/zones', { mode: 'cors' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    activeZones = new Set(
+      Object.entries(data.zones || {}).filter(([, z]) => z.active).map(([id]) => id)
+    );
+    const breached = activeZones.size > 0;
+    state.intrusion = breached;
+    setOperational(breached ? 'ZONE_BREACH' : 'OPERATIONAL', breached);
+    $('breach-banner').classList.toggle('hidden', !breached);
+    $('breach-banner').classList.toggle('alert-active', breached);
+    $('breach-tag').classList.toggle('hidden', !breached);
+    $('breach-tag').classList.toggle('flex', breached);
+  } catch (e) {
+    activeZones = new Set();
+  }
 }
+
+function zoneColor(zone) {
+  if (activeZones.has(zone.id)) return '#f43f5e';
+  if (zone.severity === 'CRITICAL') return '#fb7185';
+  return '#fbbf24';
+}
+
+function drawGeofences() {
+  const SX = cv.width, SY = cv.height;
+  geofenceZones.forEach(z => {
+    const pts = (z.polygon || []).map(([nx, ny]) => [nx * SX, ny * SY]);
+    if (pts.length < 3) return;
+    const isActive = activeZones.has(z.id);
+    const color = zoneColor(z);
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+    ctx.globalAlpha = isActive ? 0.30 : 0.12;
+    ctx.fillStyle = color; ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = isActive ? 3 : 2;
+    ctx.strokeStyle = color; ctx.stroke();
+    ctx.restore();
+    pts.forEach(([px, py]) => {
+      ctx.beginPath(); ctx.arc(px, py, isActive ? 4 : 3, 0, Math.PI * 2);
+      ctx.fillStyle = color; ctx.fill();
+    });
+    const labelX = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+    const labelY = Math.min(...pts.map(p => p[1])) - 6;
+    const text = (isActive ? '⚠ ' : '') + z.id;
+    ctx.font = 'bold 10px monospace';
+    const tw = ctx.measureText(text).width + 8;
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(labelX - tw / 2, labelY - 14, tw, 14);
+    ctx.fillStyle = color;
+    ctx.fillText(text, labelX - tw / 2 + 4, labelY - 3);
+  });
+}
+
 function drawFrame(t) {
   ctx.clearRect(0, 0, cv.width, cv.height);
   const grad = ctx.createLinearGradient(0, 0, 0, cv.height);
@@ -368,14 +410,7 @@ function drawFrame(t) {
   ctx.fillStyle = 'rgba(255,255,255,0.04)';
   ctx.fillRect(cv.width * 0.06, cv.height * 0.22, cv.width * 0.88, 10);
 
-  const d = dz();
-  drawHazard(d, t);
-
-  const wx = d.x + d.w * 0.5 + (state.intrusion ? -4 : Math.sin(t / 900) * d.w * 0.5);
-  const wy = d.y + d.h * 0.6 + Math.cos(t / 1000) * d.h * 0.5;
-  const color = state.intrusion ? '#f43f5e' : '#22c55e';
-  drawBox(wx - 14, wy - 42, 28, 44, color, 'Worker', 0.94);
-  drawBox(cv.width * 0.12, cv.height * 0.55, 26, 40, '#38bdf8', 'Worker', 0.91);
+  drawGeofences();
 
   requestAnimationFrame(drawFrame);
 }
@@ -527,37 +562,6 @@ $('api-spec').textContent = API_SPEC;
 let currentDetections = [];
 let apiAvailable = false;
 
-function drawDetections() {
-  const cv = $('video-canvas');
-  if (!cv) return;
-  const ctx = cv.getContext('2d');
-  ctx.clearRect(0, 0, cv.width, cv.height);
-  
-  currentDetections.forEach(det => {
-    const x = det.x1 * cv.width / 1280;
-    const y = det.y1 * cv.height / 720;
-    const w = (det.x2 - det.x1) * cv.width / 1280;
-    const h = (det.y2 - det.y1) * cv.height / 720;
-    
-    let color = '#22c55e';
-    if (det.class_name === 'person') color = '#3b82f6';
-    else if (det.class_name === 'helmet') color = '#eab308';
-    else if (det.class_name === 'vest') color = '#a855f7';
-    
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x, y, w, h);
-    
-    ctx.font = 'bold 11px monospace';
-    const label = `${det.class_name} (${det.confidence.toFixed(2)})`;
-    const tw = ctx.measureText(label).width + 8;
-    ctx.fillStyle = color;
-    ctx.fillRect(x, y - 16, tw, 16);
-    ctx.fillStyle = '#0b1118';
-    ctx.fillText(label, x + 4, y - 5);
-  });
-}
-
 async function fetchDetections() {
   try {
     const resp = await fetch('http://127.0.0.1:8080/edge/events?limit=20', { mode: 'cors' });
@@ -567,8 +571,7 @@ async function fetchDetections() {
     if (inferenceEvents.length > 0 && inferenceEvents[0].payload && inferenceEvents[0].payload.detections) {
       currentDetections = inferenceEvents[0].payload.detections;
       apiAvailable = true;
-      drawDetections();
-      
+
       const lastEvt = inferenceEvents[0];
       const lat = $('m-latency');
       const fps = $('m-fps');
@@ -604,6 +607,8 @@ function ambientLog() {
 setInterval(liveMetrics, 1000);
 setInterval(fetchDetections, 500);
 setInterval(ambientLog, 2500);
+setInterval(fetchZones, 500);
+setInterval(fetchGeofences, 5000);
 
 /* ================= BACKEND STATUS CHECK ================= */
 async function checkBackend() {
@@ -666,6 +671,8 @@ initIcons();
 liveMetrics();
 checkBackend();
 fetchDetections();
+fetchGeofences();
+fetchZones();
 </script>
 </body>
 </html>

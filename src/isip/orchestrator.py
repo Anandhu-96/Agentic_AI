@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -29,9 +30,9 @@ from .iiot.anomaly import AnomalyEngine
 from .iiot.rul import ThermalRulEstimator
 from .iiot.telemetry import TelemetryEngine
 from .runtime import EdgeRuntime
-from .vision.detector import Detection, ObjectDetector, build_detector
-from .vision.geofence import GeofenceEngine
+from .vision.detector import Detection, ObjectDetector
 from .vision.ppe import evaluate_ppe
+from .vision.tracking import WorkerTracker
 
 logger = logging.getLogger(__name__)
 
@@ -56,17 +57,21 @@ class EdgeOrchestrator:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.runtime = EdgeRuntime(settings)
-        self.detector: ObjectDetector = build_detector(settings.vision)
-        self.geofences = GeofenceEngine.from_yaml(settings.vision.geofences_file)
+        self.detector: ObjectDetector = self.runtime.detector
+        self.geofences = self.runtime.geofences
         self.anomaly = AnomalyEngine(settings.iiot.thresholds)
         self.rul = ThermalRulEstimator(settings.rul)
         self.telemetry = TelemetryEngine(settings.iiot)
+        self.tracker = WorkerTracker()
 
         self._active_zones: Set[str] = set()
         self._active_ppe: Set[Tuple[str, str]] = set()
+        self._ppe_cooldown_s: float = 8.0
+        self._last_ppe_fire: Dict[Tuple[str, str], float] = {}
         self._cap = None
         self._tasks: List[asyncio.Task] = []
         self._shutdown = asyncio.Event()
+        self._api_thread: Optional[threading.Thread] = None
 
     # ------------------------------------------------------------------ vision
 
@@ -117,8 +122,14 @@ class EdgeOrchestrator:
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
 
                 workers = [d for d in detections if d.class_name == "person"]
+                centers = [
+                    (w.bbox_center[0] / self.settings.video.width,
+                     w.bbox_center[1] / self.settings.video.height)
+                    for w in workers
+                ]
+                worker_ids = self.tracker.update(centers)
                 await self._check_geofences(workers)
-                await self._check_ppe(workers, detections)
+                await self._check_ppe(workers, detections, worker_ids)
 
                 with self.runtime.metrics.lock:
                     self.runtime.metrics.last_latency_ms = elapsed_ms
@@ -178,15 +189,25 @@ class EdgeOrchestrator:
             await self.runtime.broker.publish(event)
             self._audit(event)
 
-    async def _check_ppe(self, workers: List[Detection], all_dets: List[Detection]) -> None:
-        violations = evaluate_ppe(workers, all_dets, self.settings.vision)
+        # Publish the authoritative active-zone set so the /zones endpoint and
+        # dashboards read the exact same state as the event stream.
+        self.runtime.video_stream.latest_active_zones = set(self._active_zones)
+        self.runtime.detection_stream.latest_active_zones = set(self._active_zones)
+
+    async def _check_ppe(self, workers: List[Detection], all_dets: List[Detection],
+                     worker_ids: List[str] | None = None) -> None:
+        violations = evaluate_ppe(workers, all_dets, self.settings.vision,
+                                  worker_ids=worker_ids)
         active = set()
+        now = time.time()
         for label, gear, conf in violations:
             key = (label, gear)
             active.add(key)
-            if key in self._active_ppe:
+            # Cooldown so detections flickering frame-to-frame on real video
+            # don't re-fire a fresh PPE_VIOLATION every inference tick.
+            if now - self._last_ppe_fire.get(key, 0.0) < self._ppe_cooldown_s:
                 continue
-            self._active_ppe.add(key)
+            self._last_ppe_fire[key] = now
             rule = self.settings.vision.ppe_rules.get(f"no-{gear}")
             event = SafetyEvent(
                 event_type=EventType.PPE_VIOLATION,
@@ -339,16 +360,19 @@ class EdgeOrchestrator:
 
             app = create_app(self.runtime)
             cfg = self.settings.api
-            self._tasks.append(
-                asyncio.create_task(
-                    uvicorn.Server(
-                        uvicorn.Config(
-                            app, host=cfg.host, port=cfg.port, log_level="warning"
-                        )
-                    ).serve(),
-                    name="api",
+
+            def _serve_api() -> None:
+                uvicorn.run(
+                    app,
+                    host=cfg.host,
+                    port=cfg.port,
+                    log_level="warning",
                 )
+
+            self._api_thread = threading.Thread(
+                target=_serve_api, daemon=True, name="api"
             )
+            self._api_thread.start()
         logger.info(
             "edge orchestrator online: backend=%s latency_budget=%dms",
             self.settings.vision.backend,

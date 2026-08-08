@@ -104,7 +104,7 @@ tailwind.config = {
     <section class="xl:col-span-1 rounded-xl overflow-hidden border border-slate-800 bg-slate-900 flex flex-col">
       <div class="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-800">
         <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
-          <i data-lucide="camera" class="w-4 h-4 text-cyan-500"></i>LIVE FEED // CAM-01
+          <i data-lucide="camera" class="w-4 h-4 text-cyan-500"></i><span id="video-handle">LIVE FEED // CAM-01</span>
         </span>
         <span class="text-[10px] text-slate-500 flex items-center gap-1.5">
           <span class="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>REC
@@ -399,20 +399,24 @@ function drawGeofences() {
 }
 
 function drawFrame(t) {
+  // TRANSPARENT overlay: only zone polygons/labels go on top of the live
+  // feed image underneath. Never paint an opaque canvas background here,
+  // otherwise the embedded video/snapshot is completely hidden.
   ctx.clearRect(0, 0, cv.width, cv.height);
-  const grad = ctx.createLinearGradient(0, 0, 0, cv.height);
-  grad.addColorStop(0, '#0e1520'); grad.addColorStop(1, '#070b12');
-  ctx.fillStyle = grad; ctx.fillRect(0, 0, cv.width, cv.height);
-
-  ctx.fillStyle = '#1e293b';
-  ctx.fillRect(cv.width * 0.08, cv.height * 0.34, 54, 78);
-  ctx.fillRect(cv.width * 0.76, cv.height * 0.30, 46, 96);
-  ctx.fillStyle = 'rgba(255,255,255,0.04)';
-  ctx.fillRect(cv.width * 0.06, cv.height * 0.22, cv.width * 0.88, 10);
-
   drawGeofences();
-
   requestAnimationFrame(drawFrame);
+}
+
+/* ================= LIVE FEED FALLBACK ================= */
+function feedFallback() {
+  const img = $('video-feed');
+  if (!img) return;
+  // Backend offline (static Pages preview, edge node not running): swap the
+  // live snapshot URL for a static preview image so the panel isn't broken.
+  img.onerror = null;
+  img.src = img.getAttribute('data-fallback') || 'detection_output.jpg';
+  const h = $('video-handle');
+  if (h) h.textContent = 'STATIC PREVIEW // ISIP';
 }
 
 /* ================= LINE CHART ================= */
@@ -667,6 +671,8 @@ $('btn-close-modal').addEventListener('click', () => {
 /* ================= BOOT ================= */
 resizeCanvas();
 requestAnimationFrame(drawFrame);
+const _vfeed = $('video-feed');
+if (_vfeed) _vfeed.onerror = feedFallback;
 initIcons();
 liveMetrics();
 checkBackend();

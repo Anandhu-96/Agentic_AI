@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>ISIP — Industrial Safety Intelligence Platform</title>
-<meta name="description" content="Edge-first multi-modal safety AI for industrial facilities: real-time vision, PPE compliance, geofencing, machine danger zones, IIoT telemetry, RUL estimation and PLC E-Stop control." />
+<meta name="description" content="Edge-first multi-modal safety AI for industrial facilities: real-time vision, PPE compliance, geofencing, worker tracking devices, machine danger zones, IIoT telemetry, RUL estimation and PLC E-Stop control." />
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/lucide@latest"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -42,6 +42,7 @@ tailwind.config = {
   .alert-active { animation: flash-badge 0.7s steps(1) infinite; }
   .kpi-card { transition: background 0.3s; }
   .kpi-card:hover { background: #1e293b; }
+  #tracking-map { cursor: crosshair; }
 </style>
 </head>
 <body class="bg-slate-950 text-slate-100 font-sans antialiased min-h-screen">
@@ -51,8 +52,9 @@ tailwind.config = {
   <!-- ================= SIMULATION MODE NOTICE ================= -->
   <div id="sim-notice" class="hidden items-center gap-3 border border-amber-500/40 bg-amber-500/10 rounded-xl px-4 py-2.5 text-[11px] text-amber-300">
     <i data-lucide="flask-conical" class="w-4 h-4 shrink-0"></i>
-    <span><strong>SIMULATION MODE</strong> — no edge node detected on <code class="text-amber-200">127.0.0.1:8080</code>, so all telemetry,
-      detections and events are locally emulated. For the live system run <code class="text-amber-200">python scripts/run_edge.py</code> and refresh.</span>
+    <span><strong>SIMULATION MODE</strong> — no edge node detected on <code class="text-amber-200">127.0.0.1:8080</code>, so video, telemetry
+      and events are locally emulated. Worker tracking devices are simulated in both modes. For the live system run
+      <code class="text-amber-200">python scripts/run_edge.py</code> and refresh.</span>
     <button id="btn-dismiss-sim" class="ml-auto text-amber-400 hover:text-amber-200 text-[10px] px-2 py-1 rounded border border-amber-500/40">DISMISS</button>
   </div>
 
@@ -135,8 +137,8 @@ tailwind.config = {
       <div class="text-lg font-bold text-amber-300"><span id="k-workers">3</span></div>
     </div>
     <div class="kpi-card rounded-lg border border-slate-800 bg-slate-900 px-3 py-2.5">
-      <div class="text-[9px] tracking-widest text-slate-500">MACHINES</div>
-      <div class="text-lg font-bold text-slate-300"><span id="k-machines">1</span></div>
+      <div class="text-[9px] tracking-widest text-slate-500">TRACK DEVICES</div>
+      <div class="text-lg font-bold text-cyan-300"><span id="k-devices">3</span></div>
     </div>
     <div class="kpi-card rounded-lg border border-slate-800 bg-slate-900 px-3 py-2.5">
       <div class="text-[9px] tracking-widest text-slate-500">E-STOP</div>
@@ -144,11 +146,11 @@ tailwind.config = {
     </div>
   </section>
 
-  <!-- ================= MAIN GRID ================= -->
-  <main class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+  <!-- ================= ROW 1: VIDEO (independent) + WORKER TRACKING & ZONE MAP (independent) ================= -->
+  <main class="grid grid-cols-1 xl:grid-cols-2 gap-4">
 
-    <!-- ====== COLUMN 1: VIDEO STREAM ====== -->
-    <section class="xl:col-span-1 rounded-xl overflow-hidden border border-slate-800 bg-slate-900 flex flex-col">
+    <!-- ====== CONTAINER 1: LIVE VIDEO FEED (clean, no zone overlay) ====== -->
+    <section class="rounded-xl overflow-hidden border border-slate-800 bg-slate-900 flex flex-col">
       <div class="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-800">
         <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
           <i data-lucide="camera" class="w-4 h-4 text-cyan-500"></i><span id="video-handle">LIVE FEED // CAM-01</span>
@@ -161,63 +163,162 @@ tailwind.config = {
 
       <div id="video-wrap" class="relative aspect-video bg-[#0b1118] overflow-hidden scanline">
         <img id="video-feed" src="" class="absolute inset-0 w-full h-full object-contain" alt="Live Video Feed" />
-        <canvas id="video-canvas" class="absolute inset-0 w-full h-full object-contain pointer-events-none" width="1280" height="720"></canvas>
-
-        <div id="breach-banner" class="hidden absolute top-3 left-1/2 -translate-x-1/2 z-20 px-4 py-2 rounded-md border-2 border-rose-500 bg-rose-600 text-white font-bold text-xs tracking-widest whitespace-nowrap shadow-xl shadow-rose-900/40">
-          CRITICAL: ZONE BREACH DETECTED
-        </div>
-
-        <div class="absolute bottom-3 left-3 z-20 flex flex-col gap-1 text-[10px]">
-          <div id="feed-summary" class="flex items-center gap-2 px-2 py-1 bg-black/60 rounded text-emerald-400 border border-emerald-500/30">
-            <i data-lucide="hard-hat" class="w-3 h-3"></i><span id="feed-summary-text">3 workers · 0 violations</span>
-          </div>
-          <div id="breach-tag" class="hidden items-center gap-2 px-2 py-1 bg-rose-600/80 rounded text-white border border-rose-500 font-bold">
-            <i data-lucide="triangle-alert" class="w-3 h-3"></i>ZONE BREACH
-          </div>
+        <div class="absolute bottom-3 left-3 z-20 flex items-center gap-2 px-2 py-1 bg-black/60 rounded text-emerald-400 border border-emerald-500/30 text-[10px]">
+          <i data-lucide="hard-hat" class="w-3 h-3"></i><span id="feed-summary-text">3 workers · 0 violations</span>
         </div>
       </div>
 
       <div class="p-3 flex flex-col gap-2">
-        <div class="grid grid-cols-2 gap-2">
-          <button id="btn-intrusion"
-            class="flex items-center justify-center gap-2 px-3 py-2.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 text-xs font-bold hover:bg-amber-500/20 active:scale-[0.98] transition">
-            <i data-lucide="biohazard" class="w-4 h-4"></i><span id="btn-intrusion-text">Trigger Intrusion</span>
-          </button>
-          <button id="btn-ppe"
-            class="flex items-center justify-center gap-2 px-3 py-2.5 rounded border border-rose-500/40 bg-rose-500/10 text-rose-300 text-xs font-bold hover:bg-rose-500/20 active:scale-[0.98] transition">
-            <i data-lucide="hard-hat" class="w-4 h-4"></i>Toggle PPE Violation
-          </button>
-        </div>
         <div class="flex items-center justify-between text-[10px] text-slate-500 px-1">
           <span>Model: <span class="text-slate-300">yolov8s-world · trt_int8</span></span>
           <span>IOU 0.5 / conf 0.45</span>
         </div>
+        <div class="text-[10px] text-slate-600 px-1">Zone overlays are rendered in the independent tracking view below.</div>
       </div>
     </section>
 
-    <!-- ====== COLUMN 2: PPE + ZONES + RUL ====== -->
-    <section class="xl:col-span-1 rounded-xl border border-slate-800 bg-slate-900 flex flex-col gap-4 p-4">
+    <!-- ====== CONTAINER 2: WORKER TRACKING DEVICES & ZONE MAP (independent) ====== -->
+    <section class="rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden">
+      <div class="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-800">
+        <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
+          <i data-lucide="radar" class="w-4 h-4 text-emerald-400"></i>WORKER TRACKING // ZONE MAP
+        </span>
+        <span class="text-[10px] text-slate-600 flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>INDEPENDENT VIEW
+        </span>
+      </div>
 
-      <!-- PPE compliance -->
+      <div id="map-wrap" class="relative aspect-video bg-[#0b1118] overflow-hidden">
+        <canvas id="tracking-map" class="absolute inset-0 w-full h-full"></canvas>
+
+        <div id="breach-banner" class="hidden absolute top-3 left-1/2 -translate-x-1/2 z-20 px-4 py-2 rounded-md border-2 border-rose-500 bg-rose-600 text-white font-bold text-xs tracking-widest whitespace-nowrap shadow-xl shadow-rose-900/40">
+          CRITICAL: WORKER DEVICE IN RESTRICTED ZONE
+        </div>
+
+        <div class="absolute bottom-3 left-3 z-20 flex flex-wrap gap-1.5 text-[9px]">
+          <span class="flex items-center gap-1.5 px-2 py-1 bg-black/60 rounded border border-slate-700 text-slate-300">
+            <span class="w-2 h-2 rounded-full bg-[#fb7185]"></span>Static zone
+          </span>
+          <span class="flex items-center gap-1.5 px-2 py-1 bg-black/60 rounded border border-slate-700 text-slate-300">
+            <span class="w-2 h-2 rounded-full bg-[#22d3ee]"></span>Machine danger
+          </span>
+          <span class="flex items-center gap-1.5 px-2 py-1 bg-black/60 rounded border border-slate-700 text-slate-300">
+            <span class="w-2 h-2 rounded-sm bg-[#10b981]"></span>Device online
+          </span>
+          <span class="flex items-center gap-1.5 px-2 py-1 bg-black/60 rounded border border-slate-700 text-slate-300">
+            <span class="w-2 h-2 rounded-sm bg-[#ef4444]"></span>Device in zone
+          </span>
+        </div>
+      </div>
+
+      <!-- zone status chips -->
+      <div id="zone-chips" class="px-3 py-2 flex flex-wrap gap-1.5 text-[10px] border-b border-slate-800"></div>
+
+      <!-- device simulator controls -->
+      <div class="px-3 py-2 border-b border-slate-800 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] tracking-wide text-slate-400 flex items-center gap-1.5">
+            <i data-lucide="satellite-dish" class="w-3.5 h-3.5 text-emerald-400"></i>DEVICE TRACKING SIMULATOR
+          </span>
+          <span id="drift-pill" class="text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/40 text-emerald-300">AUTO-DRIFT ON</span>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <button id="btn-drift"
+            class="flex items-center justify-center gap-1.5 px-2 py-2 rounded border border-slate-700 bg-slate-800/60 text-slate-300 text-[10px] font-bold hover:bg-slate-700/60 active:scale-[0.98] transition">
+            <i data-lucide="move" class="w-3.5 h-3.5"></i>Toggle Auto-Drift
+          </button>
+          <button id="btn-device-breach"
+            class="flex items-center justify-center gap-1.5 px-2 py-2 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 text-[10px] font-bold hover:bg-amber-500/20 active:scale-[0.98] transition">
+            <i data-lucide="locate-fixed" class="w-3.5 h-3.5"></i>Move Selected Into Zone
+          </button>
+          <button id="btn-signal"
+            class="flex items-center justify-center gap-1.5 px-2 py-2 rounded border border-rose-500/40 bg-rose-500/10 text-rose-300 text-[10px] font-bold hover:bg-rose-500/20 active:scale-[0.98] transition">
+            <i data-lucide="wifi-off" class="w-3.5 h-3.5"></i>Toggle Signal Loss
+          </button>
+          <button id="btn-recharge"
+            class="flex items-center justify-center gap-1.5 px-2 py-2 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-[10px] font-bold hover:bg-emerald-500/20 active:scale-[0.98] transition">
+            <i data-lucide="battery-charging" class="w-3.5 h-3.5"></i>Recharge Selected
+          </button>
+        </div>
+        <p class="text-[9px] text-slate-600">Click the map to move the selected device. Devices ping position, battery and zone status; a device inside a restricted zone triggers a breach.</p>
+      </div>
+
+      <!-- device list -->
+      <div class="px-3 py-2 border-b border-slate-800">
+        <div class="text-[10px] text-slate-500 mb-1.5">TRACKED DEVICES</div>
+        <div id="device-list" class="space-y-1.5 max-h-40 overflow-y-auto terminal"></div>
+      </div>
+
+      <!-- device ping log -->
+      <div class="flex-1 flex flex-col min-h-[110px]">
+        <div class="px-3 py-1.5 bg-slate-950/40 border-b border-slate-800 text-[10px] text-slate-500">DEVICE TELEMETRY / PING LOG</div>
+        <div id="device-log" class="terminal flex-1 p-2 overflow-y-auto text-[9px] leading-relaxed bg-[#020617]">
+          <div class="text-slate-500">[TRACK] device tracking engine online · 3 devices</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= ROW 2: PPE / TELEMETRY / RUL ================= -->
+  <main class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+    <!-- PPE compliance -->
+    <section class="rounded-lg border border-slate-800 bg-slate-900 p-3 flex flex-col gap-2">
+      <div class="flex items-center justify-between">
+        <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
+          <i data-lucide="hard-hat" class="w-4 h-4 text-amber-400"></i>PPE COMPLIANCE // LIVE
+        </span>
+        <span id="ppe-score" class="text-xs font-bold text-emerald-300">100%</span>
+      </div>
+      <button id="btn-ppe"
+        class="flex items-center justify-center gap-2 px-3 py-2 rounded border border-rose-500/40 bg-rose-500/10 text-rose-300 text-[10px] font-bold hover:bg-rose-500/20 active:scale-[0.98] transition">
+        <i data-lucide="hard-hat" class="w-3.5 h-3.5"></i>Simulate PPE Violation
+      </button>
+      <div id="ppe-list" class="space-y-1.5 max-h-44 overflow-y-auto terminal flex-1"></div>
+    </section>
+
+    <!-- IIoT telemetry -->
+    <section class="rounded-lg border border-slate-800 bg-slate-900 p-3 flex flex-col gap-3">
       <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
         <div class="flex items-center justify-between mb-2">
           <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
-            <i data-lucide="hard-hat" class="w-4 h-4 text-amber-400"></i>PPE COMPLIANCE // LIVE
+            <i data-lucide="activity" class="w-4 h-4 text-emerald-500"></i>IIoT TELEMETRY // LIVE
           </span>
-          <span id="ppe-score" class="text-xs font-bold text-emerald-300">100%</span>
+          <span id="chart-alarm" class="hidden text-[10px] font-bold text-rose-400 alert-active">THERMAL ANOMALY</span>
         </div>
-        <div id="ppe-list" class="space-y-1.5 max-h-44 overflow-y-auto terminal"></div>
+        <div class="h-48">
+          <canvas id="telemetry-chart"></canvas>
+        </div>
       </div>
-
-      <!-- Zones -->
-      <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
-        <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2 mb-2">
-          <i data-lucide="map-pin" class="w-4 h-4 text-cyan-400"></i>GEOFENCE &amp; MACHINE DANGER ZONES
-        </span>
-        <div id="zone-list" class="space-y-1.5"></div>
+      <div class="grid grid-cols-3 gap-2">
+        <div class="rounded-lg border border-slate-800 bg-slate-950 p-2.5">
+          <div class="flex items-center gap-1.5 text-[9px] text-slate-500"><i data-lucide="flame" class="w-3 h-3 text-orange-400"></i>TMP_BRG_02</div>
+          <div class="text-sm font-bold text-cyan-300"><span id="sensor-temp-v">68.0</span> °C</div>
+          <div id="sensor-temp-s" class="text-[9px] text-emerald-400">NORMAL</div>
+        </div>
+        <div class="rounded-lg border border-slate-800 bg-slate-950 p-2.5">
+          <div class="flex items-center gap-1.5 text-[9px] text-slate-500"><i data-lucide="vibrate" class="w-3 h-3 text-cyan-400"></i>VIB_MTR_01</div>
+          <div class="text-sm font-bold text-cyan-300"><span id="sensor-vib-v">40.0</span> Hz</div>
+          <div id="sensor-vib-s" class="text-[9px] text-emerald-400">NORMAL</div>
+        </div>
+        <div class="rounded-lg border border-slate-800 bg-slate-950 p-2.5">
+          <div class="flex items-center gap-1.5 text-[9px] text-slate-500"><i data-lucide="wind" class="w-3 h-3 text-purple-400"></i>GAS_CO_03</div>
+          <div class="text-sm font-bold text-cyan-300"><span id="sensor-gas-v">7.0</span> ppm</div>
+          <div id="sensor-gas-s" class="text-[9px] text-emerald-400">NORMAL</div>
+        </div>
       </div>
+      <div class="rounded-lg border border-slate-800 bg-slate-950 p-3 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-[11px] text-slate-400"><i data-lucide="flame" class="w-4 h-4 text-orange-400 inline mr-1"></i>Simulate Motor Overheat</span>
+          <span id="temp-readout" class="text-sm font-bold text-cyan-300">68.0 °C</span>
+        </div>
+        <input id="temp-slider" type="range" min="55" max="100" value="68" class="w-full accent-rose-500" />
+        <div class="flex justify-between text-[9px] text-slate-600"><span>WARN 85°C</span><span>CRITICAL 95°C</span><span>100°C</span></div>
+      </div>
+    </section>
 
-      <!-- RUL -->
+    <!-- RUL + architecture -->
+    <section class="rounded-lg border border-slate-800 bg-slate-900 p-3 flex flex-col gap-3">
       <div class="rounded-lg border border-slate-800 bg-slate-950 p-3 flex flex-col items-center">
         <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2 mb-1 self-start">
           <i data-lucide="heart-pulse" class="w-4 h-4 text-emerald-400"></i>REMAINING USEFUL LIFE (RUL)
@@ -231,84 +332,36 @@ tailwind.config = {
         </div>
         <div class="mt-1 text-[10px] text-slate-400">Remaining life: <strong id="rul-hours" class="text-slate-200">100,000 h</strong></div>
       </div>
-    </section>
-
-    <!-- ====== COLUMN 3: TELEMETRY + ARCHITECTURE ====== -->
-    <section class="xl:col-span-1 rounded-xl border border-slate-800 bg-slate-900 flex flex-col gap-4 p-4">
-      <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
-        <div class="flex items-center justify-between mb-2">
-          <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
-            <i data-lucide="activity" class="w-4 h-4 text-emerald-500"></i>IIoT TELEMETRY // LIVE
-          </span>
-          <span id="chart-alarm" class="hidden text-[10px] font-bold text-rose-400 alert-active">THERMAL ANOMALY</span>
-        </div>
-        <div class="h-52">
-          <canvas id="telemetry-chart"></canvas>
-        </div>
-      </div>
-
-      <!-- Sensor readouts -->
-      <div class="grid grid-cols-3 gap-2">
-        <div id="sensor-temp" class="rounded-lg border border-slate-800 bg-slate-950 p-2.5">
-          <div class="flex items-center gap-1.5 text-[9px] text-slate-500"><i data-lucide="flame" class="w-3 h-3 text-orange-400"></i>TMP_BRG_02</div>
-          <div class="text-sm font-bold text-cyan-300"><span id="sensor-temp-v">68.0</span> °C</div>
-          <div id="sensor-temp-s" class="text-[9px] text-emerald-400">NORMAL</div>
-        </div>
-        <div id="sensor-vib" class="rounded-lg border border-slate-800 bg-slate-950 p-2.5">
-          <div class="flex items-center gap-1.5 text-[9px] text-slate-500"><i data-lucide="vibrate" class="w-3 h-3 text-cyan-400"></i>VIB_MTR_01</div>
-          <div class="text-sm font-bold text-cyan-300"><span id="sensor-vib-v">40.0</span> Hz</div>
-          <div id="sensor-vib-s" class="text-[9px] text-emerald-400">NORMAL</div>
-        </div>
-        <div id="sensor-gas" class="rounded-lg border border-slate-800 bg-slate-950 p-2.5">
-          <div class="flex items-center gap-1.5 text-[9px] text-slate-500"><i data-lucide="wind" class="w-3 h-3 text-purple-400"></i>GAS_CO_03</div>
-          <div class="text-sm font-bold text-cyan-300"><span id="sensor-gas-v">7.0</span> ppm</div>
-          <div id="sensor-gas-s" class="text-[9px] text-emerald-400">NORMAL</div>
-        </div>
-      </div>
-
-      <div class="rounded-lg border border-slate-800 bg-slate-950 p-3 space-y-2">
-        <div class="flex items-center justify-between">
-          <span class="text-[11px] text-slate-400"><i data-lucide="flame" class="w-4 h-4 text-orange-400 inline mr-1"></i>Simulate Motor Overheat</span>
-          <span id="temp-readout" class="text-sm font-bold text-cyan-300">68.0 °C</span>
-        </div>
-        <input id="temp-slider" type="range" min="55" max="100" value="68" class="w-full accent-rose-500" />
-        <div class="flex justify-between text-[9px] text-slate-600"><span>WARN 85°C</span><span>CRITICAL 95°C</span><span>100°C</span></div>
-      </div>
-
       <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
         <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2 mb-3">
           <i data-lucide="network" class="w-4 h-4 text-cyan-400"></i>SYSTEM ARCHITECTURE
         </span>
-        <div class="space-y-1.5">
-          <div class="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-3 py-2 text-[11px]">
-            <i data-lucide="camera" class="w-4 h-4 text-slate-400"></i><span class="text-slate-300">Camera / Sensors</span>
-            <span class="text-slate-600">(CCTV • YOLO-World)</span>
+        <div class="space-y-1.5 text-[11px]">
+          <div class="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-3 py-2">
+            <i data-lucide="camera" class="w-4 h-4 text-slate-400"></i><span class="text-slate-300">Cameras + Worker Trackers</span>
           </div>
           <div class="text-center text-slate-600 text-xs"><i data-lucide="arrow-down" class="w-4 h-4 inline"></i></div>
-          <div class="flex items-center gap-2 rounded border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-[11px]">
+          <div class="flex items-center gap-2 rounded border border-cyan-500/30 bg-cyan-500/5 px-3 py-2">
             <i data-lucide="chip" class="w-4 h-4 text-cyan-400"></i><span class="text-cyan-300 font-semibold">Edge Node (TensorRT INT8)</span>
-            <span class="ml-auto text-[9px] text-slate-500">~14 ms</span>
           </div>
           <div class="text-center text-slate-600 text-xs"><i data-lucide="arrow-down" class="w-4 h-4 inline"></i></div>
-          <div class="flex items-center gap-2 rounded border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-[11px]">
-            <i data-lucide="circuit-board" class="w-4 h-4 text-emerald-400"></i><span class="text-emerald-300 font-semibold">Local PLC Relay</span>
-            <span class="ml-auto text-[9px] text-slate-500">&lt;50 ms</span>
+          <div class="flex items-center gap-2 rounded border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
+            <i data-lucide="circuit-board" class="w-4 h-4 text-emerald-400"></i><span class="text-emerald-300 font-semibold">PLC Relay / E-Stop</span>
           </div>
           <div class="text-center text-slate-600 text-xs"><i data-lucide="arrow-down" class="w-4 h-4 inline"></i></div>
-          <div class="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-3 py-2 text-[11px]">
+          <div class="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-3 py-2">
             <i data-lucide="cloud" class="w-4 h-4 text-slate-400"></i><span class="text-slate-300">Async Cloud Sync</span>
-            <span class="ml-auto text-[9px] text-slate-500">deferred</span>
           </div>
         </div>
       </div>
     </section>
   </main>
 
-  <!-- ================= ROW 2: EVENTS / LEDGER / ALERTS ================= -->
+  <!-- ================= ROW 3: EVENTS / LEDGER / ALERTS ================= -->
   <main class="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
     <!-- Safety event stream -->
-    <section class="rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden lg:col-span-1 min-h-[360px]">
+    <section class="rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden min-h-[320px]">
       <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800">
         <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
           <i data-lucide="radio" class="w-4 h-4 text-emerald-400"></i>SAFETY EVENT STREAM
@@ -321,7 +374,7 @@ tailwind.config = {
     </section>
 
     <!-- Audit ledger / API inspector -->
-    <section class="rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden lg:col-span-1 min-h-[360px]">
+    <section class="rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden min-h-[320px]">
       <div class="flex border-b border-slate-800">
         <button id="tab-ledger" class="tab-btn flex-1 px-4 py-2 text-[11px] tracking-wide text-slate-200 border-b-2 border-emerald-500 bg-slate-800/40 flex items-center justify-center gap-2">
           <i data-lucide="terminal" class="w-4 h-4"></i>Audit Ledger
@@ -331,7 +384,7 @@ tailwind.config = {
         </button>
       </div>
 
-      <div id="view-ledger" class="flex-1 flex flex-col min-h-[320px]">
+      <div id="view-ledger" class="flex-1 flex flex-col min-h-[280px]">
         <div class="flex items-center justify-between px-4 py-1.5 bg-slate-950/40 border-b border-slate-800">
           <span class="text-[10px] text-slate-500">audit.jsonl · append-only</span>
           <button id="btn-clear" class="text-[10px] text-slate-400 hover:text-slate-200 flex items-center gap-1">
@@ -352,7 +405,7 @@ tailwind.config = {
     </section>
 
     <!-- Active alerts -->
-    <section class="rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden lg:col-span-1 min-h-[360px]">
+    <section class="rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden min-h-[320px]">
       <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800">
         <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
           <i data-lucide="triangle-alert" class="w-4 h-4 text-rose-400"></i>ACTIVE ALERTS
@@ -415,10 +468,12 @@ tailwind.config = {
 <script>
 /* =====================================================================
    ISIP OPERATOR DASHBOARD
+   - Container 1 (video) and Container 2 (worker tracking / zone map) are
+     fully independent views.
    - When an edge node is reachable at API_BASE it consumes live data
      (/metrics, /events, /audit, /stream, /video-feed).
-   - Otherwise it runs a full local simulation so the product demo
-     works identically from static hosting (GitHub Pages).
+   - Otherwise it runs a full local simulation so the product demo works
+     identically from static hosting (GitHub Pages).
    ===================================================================== */
 const API_BASE = 'http://127.0.0.1:8080/edge';
 const ASSETS = '__A__'; // build-time asset prefix ('' or 'dashboard/')
@@ -434,12 +489,12 @@ const state = {
   mode: 'SIM',                    // LIVE | SIM
   estop: false,
   intrusion: false,
+  manualBreach: false,
   thermal: false,
   alerts: 0,
   startedAt: Date.now(),
   metrics: { latency_ms: 14.2, fps: 70, uptime_s: 0, inferences: 0, is_estop_locked: false },
   telemetry: { temp: { v: 68, s: 'NORMAL' }, vib: { v: 40, s: 'NORMAL' }, gas: { v: 7, s: 'NORMAL' } },
-  history: { t: [], v: [], g: [], labels: [] },
   rul: { health: 100, hours: 100000 },
   workers: [],                    // {id, x, y, helmet, vest, gloves, missing:[], conf}
   zones: [
@@ -447,6 +502,13 @@ const state = {
       polygon: [[0.40,0.40],[0.70,0.40],[0.72,0.55],[0.65,0.75],[0.40,0.75]] },
   ],
   machine: { id: 'MACHINE-01', x: 0.78, y: 0.30, active: false },
+  devices: [                      // worker tracking devices (simulator)
+    { id: 'DEV-001', worker: 'W-1', x: 0.28, y: 0.62, battery: 96, signal: true, pingMs: 2500, acc: 0, lowBatt: false },
+    { id: 'DEV-002', worker: 'W-2', x: 0.52, y: 0.80, battery: 88, signal: true, pingMs: 3500, acc: 0, lowBatt: false },
+    { id: 'DEV-003', worker: 'W-3', x: 0.76, y: 0.58, battery: 74, signal: true, pingMs: 2000, acc: 0, lowBatt: false },
+  ],
+  selectedDevice: 'DEV-001',
+  autoDrift: true,
   alertsList: [],
 };
 
@@ -508,6 +570,16 @@ function streamEvent(event_type, severity, payload = {}) {
   div.textContent = `[${t}] ${event_type} [${severity}] ` + JSON.stringify(payload).slice(0, 140);
   el.appendChild(div);
   while (el.children.length > 200) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+
+function logDevice(txt, cls) {
+  const el = $('device-log');
+  const div = document.createElement('div');
+  div.className = cls || 'text-slate-400';
+  div.textContent = txt;
+  el.appendChild(div);
+  while (el.children.length > 120) el.removeChild(el.firstChild);
   el.scrollTop = el.scrollHeight;
 }
 
@@ -573,30 +645,184 @@ function renderPpe() {
     state.workers.reduce((n, w) => n + (w.missing.length ? 1 : 0), 0) + ' violations';
 }
 
-/* ================= ZONES PANEL ================= */
+/* ================= GEOMETRY HELPERS ================= */
+function pip(nx, ny, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    const intersect = ((yi > ny) !== (yj > ny)) && (nx < ((xj - xi) * (ny - yi)) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+function machinePoly() {
+  const m = state.machine;
+  const hw = 0.16, hh = 0.18;
+  return [[m.x - hw, m.y - hh], [m.x + hw, m.y - hh], [m.x + hw, m.y + hh], [m.x - hw, m.y + hh]];
+}
+function deviceInZone(d) {
+  return state.zones.some(z => pip(d.x, d.y, z.polygon));
+}
+
+/* ================= ZONE CHIPS + BREACH ================= */
 function renderZones() {
-  const list = $('zone-list');
-  list.innerHTML = '';
+  const chips = $('zone-chips');
+  chips.innerHTML = '';
   state.zones.forEach(z => {
-    const d = document.createElement('div');
-    d.className = 'flex items-center gap-2 rounded border px-2.5 py-1.5 text-[10px] ' +
-      (z.active ? 'border-rose-500/50 bg-rose-500/10' : 'border-slate-800 bg-slate-900');
-    const sev = z.active ? '#f43f5e' : (z.severity === 'CRITICAL' ? '#fb7185' : '#fbbf24');
-    d.innerHTML = `<span class="w-2 h-2 rounded-full shrink-0" style="background:${sev}"></span>
-      <span class="font-bold ${z.active ? 'text-rose-300' : 'text-slate-300'}">${z.id}</span>
-      <span class="text-slate-600">·</span><span class="text-slate-500">${z.severity}</span>
-      <span class="ml-auto ${z.active ? 'text-rose-300 font-bold' : 'text-slate-500'}">${z.active ? 'ACTIVE / BREACH' : 'CLEAR'}</span>`;
-    list.appendChild(d);
+    const el = document.createElement('span');
+    el.className = 'flex items-center gap-1.5 px-2 py-1 rounded border text-[9px] ' +
+      (z.active ? 'border-rose-500/50 bg-rose-500/10 text-rose-300' : 'border-slate-700 bg-slate-800/50 text-slate-400');
+    el.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${z.active ? 'bg-rose-400 animate-pulse' : 'bg-slate-500'}"></span>${z.id} · ${z.active ? 'ACTIVE' : 'CLEAR'}`;
+    chips.appendChild(el);
   });
   const m = state.machine;
-  const md = document.createElement('div');
-  md.className = 'flex items-center gap-2 rounded border px-2.5 py-1.5 text-[10px] ' +
-    (m.active ? 'border-rose-500/50 bg-rose-500/10' : 'border-cyan-500/30 bg-cyan-500/5');
-  md.innerHTML = `<i data-lucide="truck" class="w-3 h-3 ${m.active ? 'text-rose-300' : 'text-cyan-300'}"></i>
-    <span class="font-bold text-slate-300">MACHINE_DANGER_01</span>
-    <span class="ml-auto ${m.active ? 'text-rose-300 font-bold' : 'text-cyan-300'}">${m.active ? 'OCCUPIED' : 'EMPTY'}</span>`;
-  list.appendChild(md);
+  const el = document.createElement('span');
+  el.className = 'flex items-center gap-1.5 px-2 py-1 rounded border text-[9px] ' +
+    (m.active ? 'border-rose-500/50 bg-rose-500/10 text-rose-300' : 'border-cyan-500/30 bg-cyan-500/5 text-cyan-300');
+  el.innerHTML = `<i data-lucide="truck" class="w-3 h-3"></i>MACHINE_DANGER_01 · ${m.active ? 'OCCUPIED' : 'EMPTY'}`;
+  chips.appendChild(el);
   initIcons();
+}
+
+function devicesInZone() {
+  return state.devices.filter(d => d.signal && deviceInZone(d)).map(d => d.id);
+}
+
+function updateBreach() {
+  const deviceBreach = state.devices.some(d => d.signal && deviceInZone(d));
+  const on = state.manualBreach || deviceBreach;
+  if (on === state.intrusion) { renderZones(); return; }
+  state.intrusion = on;
+  state.zones[0].active = on;
+  const banner = $('breach-banner');
+  banner.classList.toggle('hidden', !on);
+  banner.classList.toggle('alert-active', on);
+  renderZones();
+  if (on) {
+    setOperational('ZONE_BREACH', true);
+    addAlert('zone', 'CRITICAL', 'Worker device entered DANGER_ZONE_A — relay trip issued.');
+    const devs = devicesInZone();
+    streamEvent('ZONE_INTRUSION', 'CRITICAL', { zone_id: 'DANGER_ZONE_A', action: 'TRIP_RELAY', devices: devs });
+    appendLog('ZONE_INTRUSION', 'CRITICAL', { zone_id: 'DANGER_ZONE_A', devices: devs });
+    appendLog('RELAY_TRIP', 'CRITICAL', { target: 'PLC_AUX_2', latency: 4.1 });
+    streamEvent('RELAY_TRIP', 'CRITICAL', { target: 'PLC_AUX_2', latency_ms: 4.1 });
+  } else {
+    clearAlert('zone');
+    if (!state.thermal && !state.estop) setOperational('OPERATIONAL', false);
+    streamEvent('ZONE_CLEARED', 'INFO', { zone_id: 'DANGER_ZONE_A' });
+    appendLog('ZONE_CLEARED', 'INFO', { zone_id: 'DANGER_ZONE_A' });
+  }
+  renderDevices();
+}
+
+function updateMachineDanger() {
+  state.machine.active = state.devices.some(d => d.signal && pip(d.x, d.y, machinePoly()));
+}
+
+/* ================= DEVICE SIMULATOR ================= */
+function selected() {
+  return state.devices.find(d => d.id === state.selectedDevice) || state.devices[0];
+}
+
+function tickDevices() {
+  state.devices.forEach(d => {
+    if (!d.signal) return;
+    if (state.autoDrift) {
+      d.x = clamp(d.x + (Math.random() * 0.03 - 0.015), 0.04, 0.96);
+      d.y = clamp(d.y + (Math.random() * 0.03 - 0.015), 0.04, 0.96);
+    }
+    d.battery = Math.max(0, d.battery - 0.02);
+    if (d.battery < 15 && !d.lowBatt) {
+      d.lowBatt = true;
+      addAlert('batt-' + d.id, 'WARNING', `Device ${d.id} battery critically low (${Math.round(d.battery)}%).`);
+      streamEvent('DEVICE_LOW_BATTERY', 'WARNING', { device: d.id, battery: Math.round(d.battery) });
+      logDevice(`[${new Date().toLocaleTimeString('en-GB', { hour12: false, hourCycle: 'h23' })}] ${d.id} LOW BATTERY ${Math.round(d.battery)}%`, 'text-amber-300');
+    }
+    d.acc += 1;
+    const every = Math.max(1, Math.round(d.pingMs / 1000));
+    if (d.acc >= every) {
+      d.acc = 0;
+      const inZ = deviceInZone(d);
+      logDevice(`[${new Date().toLocaleTimeString('en-GB', { hour12: false, hourCycle: 'h23' })}] ${d.id} ping (${d.x.toFixed(2)},${d.y.toFixed(2)}) bat=${Math.round(d.battery)}%${inZ ? ' IN_ZONE' : ''}`, inZ ? 'text-rose-300' : 'text-slate-400');
+    }
+  });
+  updateMachineDanger();
+  updateBreach();
+  renderDevices();
+  $('k-devices').textContent = state.devices.filter(d => d.signal).length;
+}
+
+function renderDevices() {
+  const list = $('device-list');
+  list.innerHTML = '';
+  state.devices.forEach(d => {
+    const sel = d.id === state.selectedDevice;
+    const inZ = deviceInZone(d);
+    const status = !d.signal ? 'SIGNAL LOST'
+      : inZ ? 'IN ZONE' : 'TRACKING';
+    const statusCls = !d.signal ? 'text-rose-400'
+      : inZ ? 'text-rose-300' : 'text-emerald-300';
+    const batColor = d.battery > 50 ? '#10b981' : d.battery > 20 ? '#f59e0b' : '#ef4444';
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-2 rounded border px-2.5 py-1.5 text-[10px] cursor-pointer transition ' +
+      (sel ? 'border-cyan-500/50 bg-cyan-500/10' : 'border-slate-800 bg-slate-950 hover:bg-slate-900');
+    row.innerHTML = `
+      <span class="font-bold ${sel ? 'text-cyan-300' : 'text-slate-300'}">${d.id}</span>
+      <span class="text-slate-600">·</span><span class="text-slate-400">${d.worker}</span>
+      <span class="ml-1 flex-1 max-w-[60px]"><span class="block h-1.5 rounded bg-slate-700 overflow-hidden"><span class="block h-full" style="width:${Math.round(d.battery)}%;background:${batColor}"></span></span></span>
+      <span class="text-slate-500 w-9 text-right">${Math.round(d.battery)}%</span>
+      <span class="ml-auto font-bold ${statusCls}">${status}</span>`;
+    row.addEventListener('click', () => { state.selectedDevice = d.id; renderDevices(); });
+    list.appendChild(row);
+  });
+}
+
+function toggleDrift() {
+  state.autoDrift = !state.autoDrift;
+  const pill = $('drift-pill');
+  pill.textContent = 'AUTO-DRIFT ' + (state.autoDrift ? 'ON' : 'OFF');
+  pill.className = 'text-[9px] px-2 py-0.5 rounded-full border ' +
+    (state.autoDrift ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300' : 'bg-slate-800/60 border-slate-700 text-slate-400');
+  logDevice('[CTRL] auto-drift ' + (state.autoDrift ? 'enabled' : 'disabled'), 'text-cyan-300');
+}
+
+function breachSelectedDevice() {
+  const d = selected();
+  d.signal = true;
+  d.x = 0.55; d.y = 0.55;
+  logDevice(`[CTRL] ${d.id} moved into DANGER_ZONE_A`, 'text-amber-300');
+  streamEvent('DEVICE_BREACH_SIM', 'WARNING', { device: d.id, zone: 'DANGER_ZONE_A' });
+  updateMachineDanger();
+  updateBreach();
+  renderDevices();
+}
+
+function toggleSignal() {
+  const d = selected();
+  d.signal = !d.signal;
+  if (!d.signal) {
+    d.lowBatt = false;
+    addAlert('sig-' + d.id, 'WARNING', `Device ${d.id} signal lost — no position reports.`);
+    streamEvent('DEVICE_SIGNAL_LOST', 'WARNING', { device: d.id });
+    logDevice(`[CTRL] ${d.id} SIGNAL LOST`, 'text-rose-300');
+  } else {
+    clearAlert('sig-' + d.id);
+    streamEvent('DEVICE_SIGNAL_OK', 'INFO', { device: d.id });
+    logDevice(`[CTRL] ${d.id} signal restored`, 'text-emerald-300');
+  }
+  updateMachineDanger();
+  updateBreach();
+  renderDevices();
+}
+
+function rechargeSelected() {
+  const d = selected();
+  d.battery = 100;
+  d.lowBatt = false;
+  clearAlert('batt-' + d.id);
+  logDevice(`[CTRL] ${d.id} battery recharged to 100%`, 'text-emerald-300');
+  streamEvent('DEVICE_RECHARGE', 'INFO', { device: d.id });
+  renderDevices();
 }
 
 /* ================= KPIs ================= */
@@ -609,7 +835,6 @@ function renderKpis() {
   $('k-alerts').textContent = state.alerts;
   $('k-inf').textContent = state.metrics.inferences;
   $('k-workers').textContent = state.workers.length;
-  $('k-machines').textContent = 1;
   $('k-uptime').textContent = fmtUptime(state.metrics.uptime_s);
   const estopEl = $('k-estop');
   if (state.estop) { estopEl.textContent = 'LOCKED'; estopEl.className = 'text-lg font-bold text-rose-300'; }
@@ -682,31 +907,6 @@ function renderSensors() {
   $('sensor-gas-v').textContent = g.v.toFixed(1);
   $('sensor-gas-s').textContent = g.s;
   $('sensor-gas-s').className = 'text-[9px] ' + (g.s === 'NORMAL' ? 'text-emerald-400' : 'text-amber-400');
-}
-
-/* ================= INTRUSION ================= */
-function setIntrusion(on, opts = {}) {
-  state.intrusion = on;
-  state.zones[0].active = on;
-  $('breach-banner').classList.toggle('hidden', !on);
-  $('breach-banner').classList.toggle('alert-active', on);
-  $('breach-tag').classList.toggle('hidden', !on);
-  $('breach-tag').classList.toggle('flex', on);
-  $('btn-intrusion-text').textContent = on ? 'Clear Intrusion' : 'Trigger Intrusion';
-  renderZones();
-  if (on) {
-    setOperational('ZONE_BREACH', true);
-    addAlert('zone', 'CRITICAL', 'Worker entered DANGER_ZONE_A — relay trip issued.');
-    streamEvent('ZONE_INTRUSION', 'CRITICAL', { zone_id: 'DANGER_ZONE_A', action: 'TRIP_RELAY' });
-    appendLog('ZONE_INTRUSION', 'CRITICAL', { zone_id: 'DANGER_ZONE_A', confidence: 0.94, worker_id: 'W-1' });
-    appendLog('RELAY_TRIP', 'CRITICAL', { target: 'PLC_AUX_2', latency: 4.1 });
-    if (opts.auto) streamEvent('RELAY_TRIP', 'CRITICAL', { target: 'PLC_AUX_2', latency_ms: 4.1 });
-  } else {
-    clearAlert('zone');
-    if (!state.thermal && !state.estop) setOperational('OPERATIONAL', false);
-    streamEvent('ZONE_CLEARED', 'INFO', { zone_id: 'DANGER_ZONE_A' });
-    appendLog('ZONE_CLEARED', 'INFO', { zone_id: 'DANGER_ZONE_A' });
-  }
 }
 
 /* ================= THERMAL SIM ================= */
@@ -787,72 +987,124 @@ function releaseEStop() {
   renderKpis();
 }
 
-/* ================= VIDEO / CANVAS ================= */
-const cv = $('video-canvas');
-const ctx = cv.getContext('2d');
-function resizeCanvas() {
-  const wrap = $('video-wrap');
-  cv.width = wrap.clientWidth || 640;
-  cv.height = wrap.clientHeight || 360;
+/* ================= TRACKING MAP CANVAS ================= */
+const mapCv = $('tracking-map');
+const mapCtx = mapCv.getContext('2d');
+function resizeMap() {
+  const wrap = $('map-wrap');
+  mapCv.width = wrap.clientWidth || 640;
+  mapCv.height = wrap.clientHeight || 360;
 }
-window.addEventListener('resize', resizeCanvas);
+window.addEventListener('resize', resizeMap);
 
-function drawFrame() {
-  ctx.clearRect(0, 0, cv.width, cv.height);
-  const SX = cv.width, SY = cv.height;
+function label(cx, cy, text, color) {
+  mapCtx.font = 'bold 10px monospace';
+  const tw = mapCtx.measureText(text).width + 8;
+  const y = Math.max(12, cy - 12);
+  mapCtx.fillStyle = 'rgba(0,0,0,0.75)';
+  mapCtx.fillRect(cx - tw / 2, y, tw, 14);
+  mapCtx.fillStyle = color;
+  mapCtx.fillText(text, cx - tw / 2 + 4, y + 11);
+}
 
-  // Static + machine zones
+function drawMap() {
+  mapCtx.clearRect(0, 0, mapCv.width, mapCv.height);
+  const SX = mapCv.width, SY = mapCv.height;
+
+  // working-area grid + border
+  mapCtx.strokeStyle = 'rgba(148,163,184,0.07)';
+  mapCtx.lineWidth = 1;
+  for (let gx = 0; gx <= SX; gx += 40) { mapCtx.beginPath(); mapCtx.moveTo(gx, 0); mapCtx.lineTo(gx, SY); mapCtx.stroke(); }
+  for (let gy = 0; gy <= SY; gy += 40) { mapCtx.beginPath(); mapCtx.moveTo(0, gy); mapCtx.lineTo(SX, gy); mapCtx.stroke(); }
+  mapCtx.strokeStyle = '#1e293b'; mapCtx.lineWidth = 2;
+  mapCtx.strokeRect(1, 1, SX - 2, SY - 2);
+  label(SX / 2, SY - 6, 'WORKING AREA // ZONE MAP', '#475569');
+
+  // static zones
   state.zones.forEach(z => {
     const pts = z.polygon.map(([nx, ny]) => [nx * SX, ny * SY]);
     const color = z.active ? '#f43f5e' : z.severity === 'CRITICAL' ? '#fb7185' : '#fbbf24';
-    ctx.beginPath();
-    ctx.moveTo(pts[0][0], pts[0][1]);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-    ctx.closePath();
-    ctx.globalAlpha = z.active ? 0.30 : 0.12; ctx.fillStyle = color; ctx.fill();
-    ctx.globalAlpha = 1; ctx.lineWidth = z.active ? 3 : 2; ctx.strokeStyle = color; ctx.stroke();
-    pts.forEach(([px, py]) => { ctx.beginPath(); ctx.arc(px, py, z.active ? 4 : 3, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); });
+    mapCtx.beginPath();
+    mapCtx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) mapCtx.lineTo(pts[i][0], pts[i][1]);
+    mapCtx.closePath();
+    mapCtx.globalAlpha = z.active ? 0.35 : 0.12; mapCtx.fillStyle = color; mapCtx.fill();
+    mapCtx.globalAlpha = 1; mapCtx.lineWidth = z.active ? 3 : 2; mapCtx.strokeStyle = color; mapCtx.stroke();
     const lx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
     const ly = Math.min(...pts.map(p => p[1])) - 8;
     label(lx, ly, (z.active ? '⚠ ' : '') + z.id, color);
   });
 
-  // Machine danger zone
-  const m = state.machine;
-  const mx = m.x * SX, my = m.y * SY;
-  const mw = 0.20 * SX, mh = 0.26 * SY;
-  const danger = [[mx - mw * 0.7, my - mh * 0.7], [mx + mw * 0.7, my - mh * 0.7], [mx + mw * 0.7, my + mh * 0.7], [mx - mw * 0.7, my + mh * 0.7]];
-  ctx.beginPath(); ctx.moveTo(danger[0][0], danger[0][1]);
-  for (let i = 1; i < danger.length; i++) ctx.lineTo(danger[i][0], danger[i][1]);
-  ctx.closePath();
-  ctx.globalAlpha = 0.18; ctx.fillStyle = '#22d3ee'; ctx.fill();
-  ctx.globalAlpha = 1; ctx.lineWidth = 2; ctx.strokeStyle = '#22d3ee'; ctx.stroke();
-  label(mx, my - mh * 0.7 - 8, 'MACHINE_DANGER_01', '#22d3ee');
-  ctx.fillStyle = '#22d3ee'; ctx.fillRect(mx - mw / 2, my - mh / 2, mw, mh);
+  // machine danger zone
+  const mp = machinePoly();
+  const mpts = mp.map(([nx, ny]) => [nx * SX, ny * SY]);
+  mapCtx.beginPath(); mapCtx.moveTo(mpts[0][0], mpts[0][1]);
+  for (let i = 1; i < mpts.length; i++) mapCtx.lineTo(mpts[i][0], mpts[i][1]);
+  mapCtx.closePath();
+  mapCtx.globalAlpha = state.machine.active ? 0.30 : 0.14; mapCtx.fillStyle = '#22d3ee'; mapCtx.fill();
+  mapCtx.globalAlpha = 1; mapCtx.lineWidth = 2; mapCtx.strokeStyle = '#22d3ee'; mapCtx.stroke();
+  const mx = state.machine.x * SX, my = state.machine.y * SY;
+  mapCtx.fillStyle = '#22d3ee'; mapCtx.fillRect(mx - 28, my - 28, 56, 56);
+  label(mx, my - 46, 'MACHINE_DANGER_01', '#22d3ee');
 
-  // Workers
-  state.workers.forEach(w => {
-    const x = w.x * SX, y = w.y * SY, bh = 0.15 * SY, bw = 0.085 * SX;
-    const color = w.missing.length ? '#ef4444' : '#10b981';
-    ctx.beginPath(); ctx.arc(x, y - bh, bw * 0.32, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
-    ctx.fillStyle = color; ctx.globalAlpha = 0.85; ctx.fillRect(x - bw / 2, y - bh, bw, bh); ctx.globalAlpha = 1;
-    if (w.helmet) { ctx.fillStyle = '#22d3ee'; ctx.fillRect(x - bw * 0.4, y - bh - 4, bw * 0.8, 4); }
-    if (w.vest) { ctx.fillStyle = '#e879f9'; ctx.fillRect(x - bw * 0.45, y - bh * 0.75, bw * 0.9, bh * 0.4); }
-    const txt = w.missing.length ? `${w.id} MISSING ${w.missing.join(',')}` : `${w.id} SAFE`;
-    label(x, y - bh - 8, txt, color);
+  // worker tracking devices
+  state.devices.forEach(d => {
+    const x = d.x * SX, y = d.y * SY;
+    if (!d.signal) {
+      mapCtx.strokeStyle = '#94a3b8'; mapCtx.lineWidth = 2;
+      mapCtx.beginPath(); mapCtx.arc(x, y, 8, 0, Math.PI * 2); mapCtx.stroke();
+      mapCtx.strokeStyle = '#f43f5e'; mapCtx.lineWidth = 2;
+      mapCtx.beginPath(); mapCtx.moveTo(x - 4, y - 4); mapCtx.lineTo(x + 4, y + 4);
+      mapCtx.moveTo(x + 4, y - 4); mapCtx.lineTo(x - 4, y + 4); mapCtx.stroke();
+      label(x, y - 14, `${d.id} SIGNAL LOST`, '#f43f5e');
+      return;
+    }
+    const inZ = deviceInZone(d);
+    const col = inZ ? '#ef4444' : '#10b981';
+    const sel = d.id === state.selectedDevice;
+    if (sel) {
+      mapCtx.strokeStyle = '#22d3ee'; mapCtx.lineWidth = 2;
+      mapCtx.beginPath(); mapCtx.arc(x, y, 13, 0, Math.PI * 2); mapCtx.stroke();
+    }
+    mapCtx.fillStyle = col;
+    mapCtx.beginPath(); mapCtx.arc(x, y, inZ ? 7 : 5, 0, Math.PI * 2); mapCtx.fill();
+    mapCtx.strokeStyle = '#fff'; mapCtx.lineWidth = 1;
+    mapCtx.beginPath(); mapCtx.arc(x, y, inZ ? 7 : 5, 0, Math.PI * 2); mapCtx.stroke();
+    // battery mini bar
+    const bw = 22;
+    mapCtx.fillStyle = 'rgba(15,23,42,0.9)';
+    mapCtx.fillRect(x - bw / 2, y + 9, bw, 4);
+    mapCtx.fillStyle = d.battery > 50 ? '#10b981' : d.battery > 20 ? '#f59e0b' : '#ef4444';
+    mapCtx.fillRect(x - bw / 2, y + 9, (bw * d.battery) / 100, 4);
+    label(x, y - 16, `${d.id}·${d.worker} ${inZ ? '⚠' : ''}`, inZ ? '#ef4444' : '#10b981');
   });
 
-  requestAnimationFrame(drawFrame);
+  requestAnimationFrame(drawMap);
 }
-function label(cx, cy, text, color) {
-  ctx.font = 'bold 10px monospace';
-  const tw = ctx.measureText(text).width + 8;
-  const y = Math.max(12, cy - 12);
-  ctx.fillStyle = 'rgba(0,0,0,0.75)';
-  ctx.fillRect(cx - tw / 2, y, tw, 14);
-  ctx.fillStyle = color;
-  ctx.fillText(text, cx - tw / 2 + 4, y + 11);
-}
+
+// click map -> select nearest device or move selected device there
+mapCv.addEventListener('click', (e) => {
+  const rect = mapCv.getBoundingClientRect();
+  const nx = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+  const ny = clamp((e.clientY - rect.top) / rect.height, 0, 1);
+  let best = null, bestD = 0.12;
+  state.devices.forEach(d => {
+    const dist = Math.hypot(d.x - nx, d.y - ny);
+    if (dist < bestD) { bestD = dist; best = d; }
+  });
+  if (best) {
+    state.selectedDevice = best.id;
+    best.x = nx; best.y = ny;
+    logDevice(`[CTRL] ${best.id} repositioned to (${nx.toFixed(2)},${ny.toFixed(2)})`, 'text-cyan-300');
+  } else {
+    const d = selected();
+    d.x = nx; d.y = ny;
+    logDevice(`[CTRL] ${d.id} moved to (${nx.toFixed(2)},${ny.toFixed(2)})`, 'text-cyan-300');
+  }
+  updateMachineDanger();
+  updateBreach();
+  renderDevices();
+});
 
 /* ================= SIMULATION ENGINE ================= */
 let simTick = 0;
@@ -864,7 +1116,6 @@ function simLoop() {
   s.fps = 66 + Math.random() * 8;
   s.inferences += Math.floor(1 + Math.random() * 3);
 
-  // Telemetry with drift + slow RUL decay
   const t = state.telemetry;
   t.temp.v = clamp(t.temp.v + (Math.random() * 1.6 - 0.8), 55, 100);
   t.vib.v = clamp(t.vib.v + (Math.random() * 3 - 1.5), 30, 80);
@@ -875,7 +1126,6 @@ function simLoop() {
   state.rul.health = Math.max(0, state.rul.health - 0.0004);
   state.rul.hours = Math.max(0, state.rul.hours - 0.4);
 
-  // occasional auto thermal anomaly
   if (!state.thermal && simTick % 45 === 0 && Math.random() < 0.6) {
     $('temp-slider').value = 92; $('temp-readout').textContent = '92.0 °C';
     state.telemetry.temp.v = 92; state.telemetry.temp.s = 'WARN';
@@ -887,14 +1137,9 @@ function simLoop() {
     thermalClear();
   }
 
-  // occasional auto intrusion to keep the demo alive
-  if (!state.intrusion && simTick % 35 === 0 && Math.random() < 0.7) setIntrusion(true, { auto: true });
-  if (state.intrusion && simTick % 30 === 0 && Math.random() < 0.6) setIntrusion(false);
-
-  // drift workers / machine
-  const w1 = state.workers[0];
-  w1.x = 0.30 + 0.04 * Math.sin(simTick / 30);
-  w1.y = 0.72 + 0.02 * Math.cos(simTick / 25);
+  // drift workers / machine (visual parity with devices)
+  state.workers[0].x = 0.30 + 0.04 * Math.sin(simTick / 30);
+  state.workers[0].y = 0.72 + 0.02 * Math.cos(simTick / 25);
   state.workers[1].x = 0.52 + 0.05 * Math.sin(simTick / 35);
   state.workers[2].x = 0.75 + 0.04 * Math.cos(simTick / 28);
   state.machine.x = 0.78 + 0.10 * Math.sin(simTick / 40);
@@ -925,7 +1170,6 @@ function startLive() {
   const vf = $('video-feed');
   if (vf) { vf.onerror = feedFallback; vf.src = API_BASE + '/video-feed'; }
 
-  // SSE event stream
   try {
     es = new EventSource(API_BASE + '/stream');
     es.onmessage = (e) => {
@@ -983,13 +1227,14 @@ async function fetchEvents() {
 
 function ingestEvent(ev) {
   const t = ev.event_type;
-  const sev = ev.severity || 'INFO';
   if (t === 'PPE_VIOLATION' && ev.payload) {
     addAlert('ppe-' + (ev.payload.worker || '?'), 'WARNING', `Worker ${ev.payload.worker} missing ${ev.payload.missing_gear}.`);
   } else if (t === 'ZONE_INTRUSION') {
-    setIntrusion(true, { auto: true });
+    state.manualBreach = true;
+    updateBreach();
   } else if (t === 'ZONE_CLEARED') {
-    setIntrusion(false);
+    state.manualBreach = false;
+    updateBreach();
   } else if (t === 'THERMAL_ANOMALY' || t === 'VIBRATION_ANOMALY' || t === 'GAS_ANOMALY') {
     state.thermal = true;
     $('chart-alarm').classList.remove('hidden');
@@ -1004,10 +1249,7 @@ function ingestEvent(ev) {
   } else if (t === 'E_STOP_RELEASE') {
     state.estop = false;
     clearAlert('estop');
-  } else if (t === 'HEARTBEAT' || t === 'INFERENCE_OK') {
-    return; // too chatty for the stream panel
   }
-  void sev;
 }
 
 async function fetchAudit() {
@@ -1030,7 +1272,6 @@ function feedFallback() {
 }
 
 /* ================= BACKEND DETECTION ================= */
-let backendOnline = false;
 async function probeBackend() {
   try {
     const ctrl = new AbortController();
@@ -1039,7 +1280,6 @@ async function probeBackend() {
     clearTimeout(to);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const m = await r.json();
-    backendOnline = true;
     state.metrics.latency_ms = m.latency_ms || 14.2;
     state.metrics.fps = m.fps || 70;
     state.metrics.alerts = m.alerts || 0;
@@ -1049,7 +1289,6 @@ async function probeBackend() {
     $('sim-notice').classList.remove('flex');
     startLive();
   } catch (err) {
-    backendOnline = false;
     $('backend-text').textContent = 'BACKEND: OFFLINE (SIM)';
     $('backend-pill').className = 'flex items-center gap-2 px-3 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-[11px] text-amber-300';
     $('edge-text').textContent = 'SIMULATED INFERENCE';
@@ -1059,7 +1298,6 @@ async function probeBackend() {
     const img = $('video-feed');
     if (img) { img.onerror = null; img.src = ASSETS + 'detection_output.jpg'; }
     setInterval(simLoop, 1000);
-    // ambient event chatter
     setInterval(() => {
       if (state.estop) return;
       const r = Math.random();
@@ -1158,7 +1396,6 @@ $('tab-api').addEventListener('click', () => {
   $('view-ledger').classList.add('hidden'); $('view-ledger').classList.remove('flex');
   tabBtn($('tab-api'), $('tab-ledger'));
 });
-$('btn-intrusion').addEventListener('click', () => setIntrusion(!state.intrusion, { auto: false }));
 $('btn-ppe').addEventListener('click', togglePpe);
 $('btn-clear').addEventListener('click', () => {
   $('terminal').innerHTML = '<div class="text-slate-500">[ISIP] ledger cleared</div>';
@@ -1172,17 +1409,23 @@ $('btn-close-modal').addEventListener('click', () => {
 $('btn-dismiss-sim').addEventListener('click', () => {
   $('sim-notice').classList.add('hidden'); $('sim-notice').classList.remove('flex');
 });
+$('btn-drift').addEventListener('click', toggleDrift);
+$('btn-device-breach').addEventListener('click', breachSelectedDevice);
+$('btn-signal').addEventListener('click', toggleSignal);
+$('btn-recharge').addEventListener('click', rechargeSelected);
 
 /* ================= BOOT ================= */
-resizeCanvas();
-requestAnimationFrame(drawFrame);
+resizeMap();
+requestAnimationFrame(drawMap);
 initIcons();
 renderKpis();
 renderPpe();
 renderZones();
+renderDevices();
 renderSensors();
 renderRul();
 renderAlerts();
+setInterval(tickDevices, 1000);
 probeBackend();
 </script>
 </body>

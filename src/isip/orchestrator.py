@@ -28,6 +28,7 @@ from .events.schemas import (
 from .iiot.anomaly import AnomalyEngine
 from .iiot.rul import ThermalRulEstimator
 from .iiot.telemetry import TelemetryEngine
+from .integrations.supabase import SupabaseClient, SupabaseEventStore
 from .runtime import EdgeRuntime
 from .vision.detector import Detection, ObjectDetector, build_detector
 from .vision.geofence import GeofenceEngine
@@ -61,6 +62,9 @@ class EdgeOrchestrator:
         self.anomaly = AnomalyEngine(settings.iiot.thresholds)
         self.rul = ThermalRulEstimator(settings.rul)
         self.telemetry = TelemetryEngine(settings.iiot)
+
+        self._supabase_client = self.runtime._supabase_client
+        self._supabase_store = SupabaseEventStore(self._supabase_client, node_id=settings.edge.node_id) if self._supabase_client and self._supabase_client.enabled else None
 
         self._active_zones: Set[str] = set()
         self._active_ppe: Set[Tuple[str, str]] = set()
@@ -332,6 +336,23 @@ class EdgeOrchestrator:
             )
         logger.debug("heartbeat loop stopped")
 
+    async def _supabase_drain_loop(self) -> None:
+        if not self._supabase_store:
+            return
+        node_id = self.settings.edge.node_id
+        logger.debug("supabase drain loop started node_id=%s", node_id)
+        try:
+            async for event in self.runtime.broker.subscribe():
+                await self._supabase_store.enqueue(event, node_id=node_id)
+                await self._supabase_store.maybe_flush()
+                if self._shutdown.is_set():
+                    break
+        except asyncio.CancelledError:
+            logger.debug("supabase drain loop cancelled, flushing remaining events")
+            if self._supabase_store:
+                await self._supabase_store.shutdown()
+        logger.debug("supabase drain loop stopped")
+
     def _register_signal_handlers(self) -> None:
         try:
             loop = asyncio.get_running_loop()
@@ -344,6 +365,8 @@ class EdgeOrchestrator:
         self._release_capture()
         if self.runtime.plc.is_locked:
             await self.runtime.plc.release()
+        if self._supabase_store is not None:
+            await self._supabase_store.shutdown()
         self.runtime.broker.close()
         for task in self._tasks:
             task.cancel()
@@ -367,6 +390,10 @@ class EdgeOrchestrator:
             asyncio.create_task(self._telemetry_loop(), name="telemetry"),
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat"),
         ]
+        if self._supabase_store is not None:
+            self._tasks.append(
+                asyncio.create_task(self._supabase_drain_loop(), name="supabase-drain")
+            )
         if with_api:
             from .api.server import create_app
             import uvicorn

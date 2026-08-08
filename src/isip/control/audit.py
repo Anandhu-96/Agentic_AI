@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class AuditLogger:
     def __init__(self, audit_dir: str = "logs", node_id: str = "edge-node-01",
                  ring_size: int = 500, max_bytes: int = 10 * 1024 * 1024,
-                 backup_count: int = 3) -> None:
+                 backup_count: int = 3, supabase_client=None) -> None:
         self.node_id = node_id
         self._dir = Path(audit_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -31,6 +31,7 @@ class AuditLogger:
         self._lock = threading.Lock()
         self._max_bytes = max_bytes
         self._backup_count = backup_count
+        self._supabase = supabase_client
 
     def _rotate(self) -> None:
         for i in range(self._backup_count - 1, 0, -1):
@@ -54,6 +55,24 @@ class AuditLogger:
                     fh.write(json.dumps(row, default=str) + "\n")
             except OSError as exc:
                 logger.error("failed to write audit entry to %s: %s", self._path, exc)
+        if self._supabase is not None and getattr(self._supabase, "enabled", False):
+            try:
+                import asyncio
+                loop = asyncio.get_running_loop()
+                sb_row = {
+                    "node_id": entry.node_id,
+                    "event_type": entry.event_type.value if hasattr(entry.event_type, "value") else str(entry.event_type),
+                    "severity": entry.severity.value if hasattr(entry.severity, "value") else str(entry.severity),
+                    "latency_ms": entry.latency_ms,
+                    "payload": entry.payload,
+                    "created_at": time.time(),
+                }
+                asyncio.run_coroutine_threadsafe(
+                    self._supabase.insert("audit_entries", [sb_row]),
+                    loop,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("failed to enqueue audit entry to supabase: %s", exc)
 
     def latest(self, limit: int = 100) -> List[Dict]:
         with self._lock:

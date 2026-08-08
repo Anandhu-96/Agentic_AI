@@ -1,7 +1,7 @@
 """Shared edge runtime state wiring broker, control plane, and audit together.
 
 PRODUCTION NOTES
------------------
+----------------
 - RuntimeMetrics is written from two contexts: FastAPI's asyncio event loop
   (e.g. trigger_estop) and the VideoStreamProducer background thread. A plain
   ``asyncio.Lock`` only protects against concurrent *coroutines* on the same
@@ -39,6 +39,7 @@ from .config import Settings
 from .control.audit import AuditLogger
 from .control.plc import PlcRelay
 from .events.broker import EventBroker
+from .integrations.supabase import SupabaseClient
 from .vision.detector import build_detector
 from .vision.geofence import GeofenceEngine
 from .vision.ppe import evaluate_ppe
@@ -286,11 +287,13 @@ class EdgeRuntime:
         self.settings = settings
         self.broker = EventBroker()
         self.metrics = RuntimeMetrics()
+        self._supabase_client = SupabaseClient(settings.supabase)
         self.audit = AuditLogger(
             audit_dir=settings.logging.audit_dir,
             node_id=settings.edge.node_id,
             max_bytes=settings.logging.audit_max_bytes,
             backup_count=settings.logging.audit_backup_count,
+            supabase_client=self._supabase_client,
         )
         self.plc = PlcRelay(
             gpio=settings.control.estop_gpio,

@@ -28,6 +28,7 @@ dependencies = [
   "paho-mqtt>=1.6",
   "requests>=2.31",
   "pillow>=10.0",
+  "supabase>=2.0",
 ]
 
 [project.optional-dependencies]

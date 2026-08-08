@@ -185,3 +185,12 @@ def build_detector(config: VisionConfig) -> ObjectDetector:
             logger.warning("YOLOv8 init failed (%s) - using synthetic detector", exc)
     logger.info("using synthetic detector backend=%s", backend)
     return SyntheticDetector(config)
+
+
+def normalize_class_name(name: str) -> str:
+    return PPE_MAP.get(name, name)
+
+
+def get_feet_position(detection: Detection) -> tuple:
+    x1, y1, x2, y2 = detection.x1, detection.y1, detection.x2, detection.y2
+    return ((x1 + x2) / 2.0, y2)

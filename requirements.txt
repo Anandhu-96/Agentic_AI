@@ -30,3 +30,6 @@ httpx>=0.27
 
 # Edge hardware (optional, absent on dev machines)
 RPi.GPIO; platform_system == "Linux"
+
+# Cloud backend
+supabase>=2.0

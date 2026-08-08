@@ -85,3 +85,10 @@ logging:
   backup_count: 5
   audit_max_bytes: 10485760
   audit_backup_count: 3
+
+supabase:
+  url: "https://gelwsxvlhzhumgjmnbtx.supabase.co"
+  key: "sb_publishable__t0RhfRMXAbhCL5Ut5269A_qSX7ueJ7"
+  enabled: true
+  batch_size: 50
+  flush_interval_s: 2.0

@@ -120,6 +120,14 @@ class LoggingConfig(BaseModel):
     audit_backup_count: int = 3
 
 
+class SupabaseConfig(BaseModel):
+    url: str = ""
+    key: str = ""
+    enabled: bool = False
+    batch_size: int = 50
+    flush_interval_s: float = 2.0
+
+
 class EdgeConfig(BaseModel):
     node_id: str = "edge-node-01"
     hardware: str = "nvidia-jetson-orin-nano"
@@ -138,6 +146,7 @@ class Settings(BaseModel):
     api: ApiConfig = Field(default_factory=ApiConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    supabase: SupabaseConfig = Field(default_factory=SupabaseConfig)
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     dynamic_zones: DynamicZonesConfig = Field(default_factory=DynamicZonesConfig)
     visualization: VisualizationConfig = Field(default_factory=VisualizationConfig)

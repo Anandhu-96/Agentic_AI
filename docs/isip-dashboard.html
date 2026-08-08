@@ -183,9 +183,16 @@ tailwind.config = {
         </span>
       </div>
 
-      <div id="video-wrap" class="relative aspect-video bg-[#0b1118] overflow-hidden scanline">
-        <img id="video-feed" src="" class="absolute inset-0 w-full h-full object-contain" alt="Live Video Feed" />
-        <div class="absolute bottom-3 left-3 z-20 flex items-center gap-2 px-2 py-1 bg-black/60 rounded text-emerald-400 border border-emerald-500/30 text-[10px]">
+       <div id="video-wrap" class="relative aspect-video bg-[#0b1118] overflow-hidden scanline">
+         <img id="video-feed" src="" class="absolute inset-0 w-full h-full object-contain" alt="Live Video Feed" />
+         <div id="video-error" class="hidden absolute inset-0 z-30 items-center justify-center p-6 text-center bg-slate-950/95">
+           <div>
+             <div class="text-rose-300 text-xs font-bold tracking-wide">VIDEO FEED UNAVAILABLE</div>
+             <div id="video-error-detail" class="text-slate-400 text-[10px] mt-2 max-w-md">Start the edge process to enable live detection.</div>
+           </div>
+         </div>
+         <div class="absolute bottom-3 left-3 z-20 flex items-center gap-2 px-2 py-1 bg-black/60 rounded text-emerald-400 border border-emerald-500/30 text-[10px]">
+
           <i data-lucide="hard-hat" class="w-3 h-3"></i><span id="feed-summary-text">3 workers · 0 violations</span>
         </div>
       </div>
@@ -1303,7 +1310,43 @@ function renderAll() {
 
 /* ================= LIVE BACKEND ================= */
 let es = null;
+let liveIntervals = [];
+let backendRetryTimer = null;
+let simStarted = false;
+
+function setVideoError(detail) {
+  const panel = $('video-error');
+  const img = $('video-feed');
+  if (img) {
+    img.onerror = null;
+    img.removeAttribute('src');
+  }
+  if (panel) {
+    panel.classList.remove('hidden');
+    panel.classList.add('flex');
+  }
+  if ($('video-error-detail')) $('video-error-detail').textContent = detail;
+}
+
+function clearVideoError() {
+  const panel = $('video-error');
+  if (panel) {
+    panel.classList.add('hidden');
+    panel.classList.remove('flex');
+  }
+}
+
+function scheduleBackendRetry() {
+  if (backendRetryTimer) return;
+  backendRetryTimer = setTimeout(() => {
+    backendRetryTimer = null;
+    probeBackend();
+  }, 5000);
+}
+
 function stopLive() {
+  liveIntervals.forEach(clearInterval);
+  liveIntervals = [];
   if (es) { try { es.close(); } catch (e) {} es = null; }
 }
 
@@ -1312,9 +1355,17 @@ function startLive() {
   $('backend-text').textContent = 'BACKEND: ONLINE';
   $('backend-pill').className = 'flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-[11px] text-emerald-300';
   $('edge-text').textContent = 'EDGE INFERENCE ACTIVE';
-  $('video-handle').textContent = 'LIVE FEED // CAM-01';
+  $('video-handle').textContent = 'LIVE DETECTION // CAM-01';
+  clearVideoError();
   const vf = $('video-feed');
-  if (vf) { vf.onerror = feedFallback; vf.src = API_BASE + '/video-feed'; }
+  if (vf) {
+    vf.onerror = () => {
+      setVideoError('The edge server is online, but the annotated MJPEG stream could not be opened. Check the edge process logs.');
+      $('video-handle').textContent = 'LIVE FEED ERROR // CAM-01';
+    };
+    vf.onload = clearVideoError;
+    vf.src = API_BASE + '/video-feed?live=' + Date.now();
+  }
 
   try {
     es = new EventSource(API_BASE + '/stream');
@@ -1329,9 +1380,10 @@ function startLive() {
     es.onerror = () => streamEvent('SSE', 'WARNING', { note: 'reconnecting…' });
   } catch (err) {}
 
-  setInterval(async () => {
+  liveIntervals.push(setInterval(async () => {
     try {
       const r = await fetch(API_BASE + '/metrics');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
       const m = await r.json();
       state.metrics.latency_ms = m.latency_ms;
       state.metrics.fps = m.fps;
@@ -1339,13 +1391,20 @@ function startLive() {
       state.metrics.uptime_s = m.uptime_s;
       state.metrics.inferences = m.inferences;
       state.estop = !!m.is_estop_locked;
+      const video = m.video || {};
+      if (video.error && !video.ready) {
+        setVideoError('Video producer problem: ' + video.error);
+      }
       if (m.is_estop_locked) { $('estop-state').textContent = '⚠ RELAY LOCKED'; $('estop-verdict').textContent = 'POWER CUT EXECUTED'; }
       renderKpis();
-    } catch (err) {}
-  }, 2000);
+    } catch (err) {
+      setVideoError('Lost connection to ' + API_BASE + '. Start the edge process with: python scripts/run_edge.py');
+      scheduleBackendRetry();
+    }
+  }, 2000));
 
-  setInterval(fetchEvents, 2000);
-  setInterval(fetchAudit, 4000);
+  liveIntervals.push(setInterval(fetchEvents, 2000));
+  liveIntervals.push(setInterval(fetchAudit, 4000));
 }
 
 async function fetchEvents() {
@@ -1410,11 +1469,8 @@ async function fetchAudit() {
 
 /* ================= VIDEO FEED FALLBACK ================= */
 function feedFallback() {
-  const img = $('video-feed');
-  if (!img) return;
-  img.onerror = null;
-  img.src = ASSETS + 'detection_output.jpg';
-  $('video-handle').textContent = 'STATIC PREVIEW // ISIP';
+  setVideoError('The live annotated feed is unavailable. The dashboard will not replace it with a static image.');
+  $('video-handle').textContent = 'LIVE FEED UNAVAILABLE // CAM-01';
 }
 
 /* ================= BACKEND DETECTION ================= */
@@ -1434,23 +1490,31 @@ async function probeBackend() {
     $('sim-notice').classList.add('hidden');
     $('sim-notice').classList.remove('flex');
     startLive();
+    if (m.video && m.video.error && !m.video.ready) {
+      setVideoError('Video producer problem: ' + m.video.error);
+    }
   } catch (err) {
-    $('backend-text').textContent = 'BACKEND: OFFLINE (SIM)';
-    $('backend-pill').className = 'flex items-center gap-2 px-3 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-[11px] text-amber-300';
-    $('edge-text').textContent = 'SIMULATED INFERENCE';
-    $('video-handle').textContent = 'SIMULATED FEED // CAM-01';
+    stopLive();
+    $('backend-text').textContent = 'BACKEND: OFFLINE';
+    $('backend-pill').className = 'flex items-center gap-2 px-3 py-1.5 rounded-full border border-rose-500/40 bg-rose-500/10 text-[11px] text-rose-300';
+    $('edge-text').textContent = 'LIVE DETECTION OFFLINE';
+    $('video-handle').textContent = 'LIVE FEED UNAVAILABLE // CAM-01';
     $('sim-notice').classList.remove('hidden');
     $('sim-notice').classList.add('flex');
-    const img = $('video-feed');
-    if (img) { img.onerror = null; img.src = ASSETS + 'detection_output.jpg'; }
-    setInterval(simLoop, 1000);
-    setInterval(() => {
-      if (state.estop) return;
-      const r = Math.random();
-      if (r < 0.3) streamEvent('INFERENCE_OK', 'INFO', { cam: 'CAM-01', detections: state.workers.length });
-      else if (r < 0.5) streamEvent('HEARTBEAT', 'INFO', { uptime_s: Math.round(state.metrics.uptime_s), edge_ok: true });
-      else if (r < 0.7) streamEvent('PPE_COMPLIANT', 'INFO', { worker: state.workers[0].id, helmet: true, vest: true });
-    }, 2500);
+    setVideoError('Cannot connect to ' + API_BASE + '. Start the edge process with: python scripts/run_edge.py');
+    scheduleBackendRetry();
+    if (!simStarted) {
+      simStarted = true;
+      state.mode = 'SIM';
+      liveIntervals.push(setInterval(simLoop, 1000));
+      liveIntervals.push(setInterval(() => {
+        if (state.estop) return;
+        const r = Math.random();
+        if (r < 0.3) streamEvent('INFERENCE_OK', 'INFO', { cam: 'CAM-01', detections: state.workers.length });
+        else if (r < 0.5) streamEvent('HEARTBEAT', 'INFO', { uptime_s: Math.round(state.metrics.uptime_s), edge_ok: true });
+        else if (r < 0.7) streamEvent('PPE_COMPLIANT', 'INFO', { worker: state.workers[0].id, helmet: true, vest: true });
+      }, 2500));
+    }
   }
 }
 

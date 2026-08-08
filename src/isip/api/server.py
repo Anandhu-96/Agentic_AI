@@ -167,6 +167,7 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
         logger.debug("metrics requested")
         m = await runtime.metrics.snapshot()
         m["node_id"] = runtime.settings.edge.node_id
+        m["video"] = runtime.video_stream.status()
         return m
 
     @app.get(f"{prefix}/trackers", tags=["edge"])

@@ -105,6 +105,7 @@ class VideoStreamProducer:
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._error: Optional[Exception] = None
+        self._source_error: Optional[Exception] = None
         self._frame_times: "deque[float]" = deque(maxlen=30)
 
     @property
@@ -114,6 +115,16 @@ class VideoStreamProducer:
     @property
     def is_alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    def status(self) -> dict:
+        """Return safe diagnostics for the API and operator dashboard."""
+        return {
+            "ready": self.is_alive and self._error is None and self._source_error is None,
+            "alive": self.is_alive,
+            "source": str(self.video_cfg.source),
+            "synthetic_camera": bool(self.video_cfg.synthetic_camera),
+            "error": str(self._error or self._source_error) if (self._error or self._source_error) is not None else None,
+        }
 
     def start(self) -> None:
         if self._running:
@@ -144,9 +155,11 @@ class VideoStreamProducer:
             if not self.video_cfg.synthetic_camera:
                 cap = cv2.VideoCapture(self.video_cfg.source)
                 if not cap.isOpened():
+                    error = RuntimeError(f"could not open video source: {self.video_cfg.source!r}")
+                    self._source_error = error
                     logger.error(
-                        "Could not open video source %r; falling back to synthetic frames",
-                        self.video_cfg.source,
+                        "%s; using generated frames until the source is fixed",
+                        error,
                     )
                     cap = None
 

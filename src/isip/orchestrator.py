@@ -30,9 +30,10 @@ from .iiot.anomaly import AnomalyEngine
 from .iiot.rul import ThermalRulEstimator
 from .iiot.telemetry import TelemetryEngine
 from .runtime import EdgeRuntime
-from .vision.detector import Detection, ObjectDetector
+from .vision.detector import Detection, ObjectDetector, get_feet_position
 from .vision.ppe import evaluate_ppe
-from .vision.tracking import WorkerTracker
+from .vision.tracking import MachineTracker, WorkerTracker
+from .vision.zones import DynamicZoneEngine
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +64,14 @@ class EdgeOrchestrator:
         self.rul = ThermalRulEstimator(settings.rul)
         self.telemetry = TelemetryEngine(settings.iiot)
         self.tracker = WorkerTracker()
+        self.machine_tracker = MachineTracker(
+            iou_threshold=settings.tracking.iou_threshold,
+            max_age=settings.tracking.max_age,
+        )
+        self.dynamic_zones = DynamicZoneEngine(settings.dynamic_zones.machine_danger)
 
         self._active_zones: Set[str] = set()
+        self._active_machine_zones: Set[str] = set()
         self._active_ppe: Set[Tuple[str, str]] = set()
         self._ppe_cooldown_s: float = 8.0
         self._last_ppe_fire: Dict[Tuple[str, str], float] = {}
@@ -122,20 +129,42 @@ class EdgeOrchestrator:
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
 
                 workers = [d for d in detections if d.class_name == "person"]
-                centers = [
-                    (w.bbox_center[0] / self.settings.video.width,
-                     w.bbox_center[1] / self.settings.video.height)
-                    for w in workers
-                ]
-                worker_ids = self.tracker.update(centers)
+                worker_ids = self.tracker.update([w.norm_center for w in workers])
                 await self._check_geofences(workers)
                 await self._check_ppe(workers, detections, worker_ids)
+
+                machines = [d for d in detections if d.class_name == "machine"]
+                _tracks = []
+                machine_ids: Dict[int, Optional[str]] = {}
+                if machines:
+                    _matches = self.machine_tracker.update([m.norm_bbox for m in machines])
+                    machine_ids = {
+                        idx: (t.id if t is not None else None)
+                        for idx, t in enumerate(_matches)
+                        if t is not None
+                    }
+                # Dynamic zones derive from ALL live tracks (including machines
+                # momentarily missed), so the danger zone holds for max_age.
+                dynamic = self.dynamic_zones.update(self.machine_tracker.active_tracks)
+                await self._check_machine_zones(workers, dynamic)
 
                 with self.runtime.metrics.lock:
                     self.runtime.metrics.last_latency_ms = elapsed_ms
                     actual_fps = 1000.0 / max(elapsed_ms, 1.0)
                     self.runtime.metrics.last_fps = min(actual_fps, float(self.settings.edge.fps_limit))
                     self.runtime.metrics.inference_count += 1
+
+                active_all = set(self._active_zones) | set(self._active_machine_zones)
+                # Publish once so both video producers render without their
+                # own YOLO calls (single inference stream on the GPU).
+                self.runtime.detection_state.update(
+                    detections,
+                    active_all,
+                    self.runtime.metrics.last_fps,
+                    elapsed_ms,
+                    dynamic_zones={z.name: z for z in dynamic},
+                    machine_ids=machine_ids,
+                )
 
                 if frame_idx % 15 == 0:
                     await self.runtime.broker.publish(
@@ -157,9 +186,7 @@ class EdgeOrchestrator:
     async def _check_geofences(self, workers: List[Detection]) -> None:
         seen: Set[str] = set()
         for worker in workers:
-            w, h = self.settings.video.width, self.settings.video.height
-            cx, cy = worker.bbox_center
-            zone = self.geofences.locate((cx / w, cy / h))
+            zone = self.geofences.locate_detection(worker)
             if zone is None:
                 continue
             seen.add(zone.name)
@@ -193,6 +220,49 @@ class EdgeOrchestrator:
         # dashboards read the exact same state as the event stream.
         self.runtime.video_stream.latest_active_zones = set(self._active_zones)
         self.runtime.detection_stream.latest_active_zones = set(self._active_zones)
+
+    async def _check_machine_zones(self, workers: List[Detection], dynamic) -> None:
+        """Evaluate workers against machine-derived danger zones.
+
+        A worker whose feet enter a machine danger zone fires a CRITICAL
+        ZONE_INTRUSION for the dynamic zone (deduplicated by zone name).
+        """
+        seen: Set[str] = set()
+        for worker in workers:
+            feet = get_feet_position(worker)
+            zone = self.dynamic_zones.locate(feet)
+            if zone is None:
+                continue
+            seen.add(zone.name)
+            if zone.name in self._active_machine_zones:
+                continue
+            self._active_machine_zones.add(zone.name)
+            event = SafetyEvent(
+                event_type=EventType.ZONE_INTRUSION,
+                severity=Severity.CRITICAL,
+                zone_id=zone.name,
+                confidence=worker.confidence,
+                payload={
+                    "zone": zone.name,
+                    "machine_id": zone.machine_id,
+                    "description": "Worker inside machine danger zone",
+                    "dynamic": True,
+                },
+            )
+            await self.runtime.broker.publish(event)
+            self._audit(event)
+            await self._trip_relay(reason=f"machine_danger:{zone.name}")
+
+        for cleared in self._active_machine_zones - seen:
+            self._active_machine_zones.discard(cleared)
+            event = SafetyEvent(
+                event_type=EventType.ZONE_CLEARED,
+                severity=Severity.INFO,
+                zone_id=cleared,
+                payload={"dynamic": True},
+            )
+            await self.runtime.broker.publish(event)
+            self._audit(event)
 
     async def _check_ppe(self, workers: List[Detection], all_dets: List[Detection],
                      worker_ids: List[str] | None = None) -> None:

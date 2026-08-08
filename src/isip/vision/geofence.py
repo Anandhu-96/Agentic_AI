@@ -94,6 +94,27 @@ class GeofenceEngine:
                 return zone
         return None
 
+    def locate_point(self, point: Point) -> Optional[GeofenceZone]:
+        """Alias of :meth:`locate` for callers that prefer the explicit name."""
+        return self.locate(point)
+
+    def locate_detection(
+        self, detection, use_feet: bool = True
+    ) -> Optional[GeofenceZone]:
+        """Locate a :class:`Detection` using its foot (or centre) position.
+
+        Feet prefer the segmentation polygon's bottom-most point (via
+        :func:`get_feet_position`) and fall back to the bbox bottom-centre, so
+        geofence tests follow the person's actual contact point.
+        """
+        if use_feet:
+            from .detector import get_feet_position
+
+            point = get_feet_position(detection)
+        else:
+            point = detection.norm_center
+        return self.locate(point)
+
     def overlay_polys(self, w: int = 1280, h: int = 720, normalize: bool = False) -> Dict[str, dict]:
         """Serializable zone geometry used by dashboards/overlays.
 

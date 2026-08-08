@@ -1,16 +1,13 @@
-"""Lightweight centroid-based worker tracker.
+"""Lightweight centroid-based worker tracker and IoU-based machine tracker.
 
-Stable labels for the demo pipeline: without tracking, worker IDs derived from
-raw pixel coordinates change on every frame (the video moves by a pixel or two),
-so the orchestrator would re-fire PPE/zone events for a different "worker" each
-frame. This tracker reuses an ID when a new detection is close to a previously
-seen worker, and assigns a fresh `W-N` only when a genuinely new worker appears.
+Both provide stable identities across frames so events (PPE, zone intrusions,
+dynamic machine zones) don't re-fire on every inference tick.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 Point = Tuple[float, float]
 
@@ -57,6 +54,109 @@ class WorkerTracker:
                 del self._tracks[wid]
 
         return ids
+
+    def reset(self) -> None:
+        self._tracks.clear()
+        self._next_id = 1
+        self._frame = 0
+
+
+def _iou_norm(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
+    """Intersection-over-union of two normalized (x1, y1, x2, y2) boxes."""
+    ix1 = max(a[0], b[0])
+    iy1 = max(a[1], b[1])
+    ix2 = min(a[2], b[2])
+    iy2 = min(a[3], b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter <= 0:
+        return 0.0
+    a_area = (a[2] - a[0]) * (a[3] - a[1])
+    b_area = (b[2] - b[0]) * (b[3] - b[1])
+    union = a_area + b_area - inter
+    return inter / union if union > 0 else 0.0
+
+
+class MachineTrack:
+    """A tracked machine with a stable ID and recent box history."""
+
+    def __init__(self, track_id: str, bbox: Tuple[float, float, float, float],
+                 center: Point, frame: int) -> None:
+        self.id = track_id
+        self.bbox = bbox  # normalized (x1, y1, x2, y2)
+        self.center = center
+        self.last_frame = frame
+        self.age = 0  # frames since last observation; increments when unseen
+        self.first_frame = frame
+
+    def __repr__(self) -> str:  # pragma: no cover - debug aid
+        return f"MachineTrack(id={self.id}, age={self.age}, bbox={tuple(round(v, 3) for v in self.bbox)})"
+
+
+class MachineTracker:
+    """Greedy IoU/centroid association for machine detections.
+
+    Reuses an existing ID when a new machine box sufficiently overlaps a
+    previously seen machine (IoU >= ``iou_threshold``); otherwise creates a new
+    ``M-N`` ID. Tracks age out after ``max_age`` frames without a match.
+    """
+
+    def __init__(self, iou_threshold: float = 0.3, max_age: int = 10) -> None:
+        self._iou_threshold = iou_threshold
+        self._max_age = max_age
+        self._next_id = 1
+        self._frame = 0
+        self._tracks: Dict[str, MachineTrack] = {}
+
+    def update(self, boxes: List[Tuple[float, float, float, float]]) -> List[Optional[MachineTrack]]:
+        """Associate normalized boxes to stable track IDs.
+
+        Returns one entry per input box: the matched :class:`MachineTrack` or
+        ``None`` when the box was too small / invalid.
+        """
+        self._frame += 1
+        used: set[str] = set()
+        result: List[Optional[MachineTrack]] = []
+
+        for box in boxes:
+            cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+            if box[2] - box[0] < 1e-6 or box[3] - box[1] < 1e-6:
+                result.append(None)
+                continue
+            best_id: Optional[str] = None
+            best_score = self._iou_threshold
+            for tid, trk in self._tracks.items():
+                if tid in used:
+                    continue
+                score = _iou_norm(box, trk.bbox)
+                if score >= best_score:
+                    best_score = score
+                    best_id = tid
+            if best_id is None:
+                best_id = f"M-{self._next_id}"
+                self._next_id += 1
+                self._tracks[best_id] = MachineTrack(best_id, box, (cx, cy), self._frame)
+            else:
+                trk = self._tracks[best_id]
+                trk.bbox = box
+                trk.center = (cx, cy)
+                trk.last_frame = self._frame
+                trk.age = 0
+            used.add(best_id)
+            result.append(self._tracks[best_id])
+
+        # Age out tracks that were not matched this frame.
+        for tid in list(self._tracks):
+            if tid in used:
+                continue
+            self._tracks[tid].age += 1
+            if self._tracks[tid].age >= self._max_age:
+                del self._tracks[tid]
+
+        return result
+
+    @property
+    def active_tracks(self) -> List[MachineTrack]:
+        return [t for t in self._tracks.values() if t.age < self._max_age]
 
     def reset(self) -> None:
         self._tracks.clear()

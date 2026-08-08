@@ -18,16 +18,52 @@ class VideoConfig(BaseModel):
     synthetic_camera: bool = True
 
 
+class SegmentationConfig(BaseModel):
+    enabled: bool = False
+    model: str = "yolov8n-seg.pt"
+    conf_threshold: float = 0.45
+
+
 class VisionConfig(BaseModel):
     model: str = "yolov8n.pt"
-    backend: str = "synthetic"  # synthetic (demo) | yolov8 (real inference)
+    backend: str = "synthetic"  # synthetic (demo) | yolov8 | yolov8_world | yolov8_seg
     conf_threshold: float = 0.45
     iou_threshold: float = 0.5
+    imgsz: int = 640  # YOLO inference resolution (internal; boxes map back to frame)
     classes: List[str] = Field(default_factory=lambda: ["person", "helmet"])
+    machine_classes: List[str] = Field(
+        default_factory=lambda: ["heavy machinery", "industrial machine", "construction equipment", "engine"]
+    )
     ppe_required: List[str] = Field(default_factory=lambda: ["helmet", "vest"])
     ppe_rules: Dict[str, Any] = Field(default_factory=dict)
     geofences_file: str = "config/geofences.yaml"
     device: str = "cpu"
+    segmentation: SegmentationConfig = Field(default_factory=SegmentationConfig)
+
+
+class TrackingConfig(BaseModel):
+    enabled: bool = True
+    max_age: int = 10
+    iou_threshold: float = 0.3
+
+
+class MachineDangerConfig(BaseModel):
+    enabled: bool = True
+    buffer: float = 0.05  # normalized expansion around the machine bbox
+    smoothing: float = 0.7  # EMA factor for zone smoothing (0=no smoothing)
+
+
+class DynamicZonesConfig(BaseModel):
+    machine_danger: MachineDangerConfig = Field(default_factory=MachineDangerConfig)
+
+
+class VisualizationConfig(BaseModel):
+    show_person_bbox: bool = False
+    show_person_polygon: bool = True
+    fill_person_polygon: bool = True
+    show_machine_bbox: bool = True
+    show_machine_zone: bool = True
+    show_static_zones: bool = True
 
 
 class ThresholdConfig(BaseModel):
@@ -94,6 +130,9 @@ class Settings(BaseModel):
     api: ApiConfig = Field(default_factory=ApiConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    tracking: TrackingConfig = Field(default_factory=TrackingConfig)
+    dynamic_zones: DynamicZonesConfig = Field(default_factory=DynamicZonesConfig)
+    visualization: VisualizationConfig = Field(default_factory=VisualizationConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "Settings":

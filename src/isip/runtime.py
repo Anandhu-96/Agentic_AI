@@ -8,7 +8,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Set
+from typing import Dict, Optional, Set
 
 import cv2
 import numpy as np
@@ -20,6 +20,12 @@ from .events.broker import EventBroker
 from .vision.detector import ObjectDetector, build_detector
 from .vision.geofence import GeofenceEngine
 from .vision.ppe import evaluate_ppe
+from .vision.renderer import (
+    draw_detections,
+    draw_dynamic_zones,
+    draw_static_zones,
+    draw_status_bar,
+)
 
 
 @dataclass
@@ -45,40 +51,58 @@ class RuntimeMetrics:
             }
 
 
-def draw_zones(frame: np.ndarray, geofences: GeofenceEngine, active_zones: Set[str]) -> None:
-    """Overlay geofence polygons on a BGR frame.
+class DetectionState:
+    """Thread-safe snapshot of the latest inference results.
 
-    Single source of truth for zone rendering: every caller (video streams,
-    snapshot producers) scales the normalized polygons by the frame's own size
-    so the drawn boundaries always match the engine's point-in-polygon tests.
+    The orchestrator's inference loop writes here once per frame; the two
+    video producers read it afterwards and only render boxes/zones. This keeps
+    YOLO running exactly ONE stream on the GPU instead of three.
     """
-    h, w = frame.shape[:2]
-    for zone in geofences.zones.values():
-        pts = np.array([(x * w, y * h) for x, y in zone.polygon], dtype=np.float32)
-        if len(pts) < 3:
-            continue
-        pts = pts.astype(int)
-        is_active = zone.name in active_zones
-        base_color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
-        line_thickness = 2 if is_active else 1
-        cv2.polylines(frame, [pts], isClosed=True, color=base_color,
-                      thickness=line_thickness, lineType=cv2.LINE_AA)
-        for i, (px, py) in enumerate(pts):
-            radius = 4 if is_active else 3
-            cv2.circle(frame, (int(px), int(py)), radius, base_color, -1, lineType=cv2.LINE_AA)
-            cv2.circle(frame, (int(px), int(py)), radius + 2, (255, 255, 255), 1, lineType=cv2.LINE_AA)
-        label_y = max(16, int(pts[:, 1].min()) - 8)
-        label_text = f"{zone.name} [ACTIVE]" if is_active else zone.name
-        (tw, th), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-        cv2.rectangle(frame, (int(pts[:, 0].min()), label_y - th - 4),
-                      (int(pts[:, 0].min()) + tw + 6, label_y + 4), (0, 0, 0), -1)
-        cv2.putText(frame, label_text, (int(pts[:, 0].min()) + 3, label_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, base_color if is_active else (200, 200, 200), 1)
 
-    if active_zones:
-        banner = f"ZONE BREACH: {', '.join(sorted(active_zones))}"
-        cv2.rectangle(frame, (0, 0), (w, 32), (0, 0, 180), -1)
-        cv2.putText(frame, banner, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self._detections = []
+        self._active_zones: Set[str] = set()
+        self._fps = 0.0
+        self._latency_ms = 0.0
+        self._dynamic_zones = {}  # name -> dict (normalized polygon, machine_id)
+        self._machine_ids: Dict[int, Optional[str]] = {}
+
+    def update(self, detections, active_zones, fps: float, latency_ms: float,
+               dynamic_zones=None, machine_ids=None) -> None:
+        with self.lock:
+            self._detections = list(detections)
+            self._active_zones = set(active_zones)
+            self._fps = fps
+            self._latency_ms = latency_ms
+            self._dynamic_zones = dict(dynamic_zones or {})
+            self._machine_ids = dict(machine_ids or {})
+
+    def snapshot(self):
+        with self.lock:
+            return (
+                list(self._detections),
+                set(self._active_zones),
+                self._fps,
+                self._latency_ms,
+                dict(self._dynamic_zones),
+                dict(self._machine_ids),
+            )
+
+    @property
+    def active_zones(self) -> Set[str]:
+        with self.lock:
+            return set(self._active_zones)
+
+    @property
+    def dynamic_zones(self) -> dict:
+        with self.lock:
+            return dict(self._dynamic_zones)
+
+    @property
+    def machine_ids(self) -> dict:
+        with self.lock:
+            return dict(self._machine_ids)
 
 
 class VideoStreamProducer:
@@ -91,13 +115,17 @@ class VideoStreamProducer:
         draw_zones: bool = True,
         detector: ObjectDetector | None = None,
         geofences: GeofenceEngine | None = None,
+        shared_state: DetectionState | None = None,
     ) -> None:
         self.settings = settings
         self.vision_cfg = settings.vision
         self.video_cfg = settings.video
+        self.vision_overlay_cfg = settings.visualization
         self.detector = detector or build_detector(self.vision_cfg)
         self.geofences = geofences or GeofenceEngine.from_yaml(self.vision_cfg.geofences_file)
         self._draw_zones = draw_zones
+        self._shared_state = shared_state
+        self._inference_lock = threading.Lock()
         self._queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=20)
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -135,10 +163,13 @@ class VideoStreamProducer:
                 if not cap.isOpened():
                     cap = None
 
-            target_fps = max(1, int(getattr(self.settings.edge, "fps_limit", 4)))
+            # Display-only streams don't need to match the inference FPS;
+            # throttle them so CPU video decode + JPEG encoding doesn't starve
+            # the YOLO pipeline (which runs its own loop).
+            target_fps = 12 if self._shared_state is not None else max(
+                1, int(getattr(self.settings.edge, "fps_limit", 4))
+            )
             interval = 1.0 / target_fps
-            last_inference = 0.0
-            inference_interval = 1.0 / max(1, target_fps - 1)
 
             while self._running:
                 try:
@@ -153,48 +184,51 @@ class VideoStreamProducer:
                     else:
                         frame = np.zeros((self.video_cfg.height, self.video_cfg.width, 3), dtype=np.uint8)
 
-                    now = time.perf_counter()
-                    if now - last_inference >= inference_interval:
-                        last_inference = now
-                        started = time.perf_counter()
-                        detections = self.detector.detect(frame)
-                        elapsed_ms = (time.perf_counter() - started) * 1000.0
+                    h, w = frame.shape[:2]
 
-                        workers = [d for d in detections if d.class_name == "person"]
-                        violations = evaluate_ppe(workers, detections, self.vision_cfg)
-
-                        h, w = frame.shape[:2]
+                    # One YOLO pipeline owns inference and shares the result.
+                    # When connected to a shared state we only render, so the
+                    # GPU runs one stream instead of three.
+                    if self._shared_state is not None:
+                        (detections, active_zones, _fps, lat_ui,
+                         dynamic_zones, machine_ids) = self._shared_state.snapshot()
+                        dynamic = list(dynamic_zones.values())
+                        violations = evaluate_ppe(
+                            [d for d in detections if d.class_name == "person"],
+                            detections,
+                            self.vision_cfg,
+                        )
+                    else:
+                        with self._inference_lock:
+                            started = time.perf_counter()
+                            detections = self.detector.detect(frame)
+                            lat_ui = (time.perf_counter() - started) * 1000.0
+                        violations = evaluate_ppe(
+                            [d for d in detections if d.class_name == "person"],
+                            detections,
+                            self.vision_cfg,
+                        )
                         active_zones = set()
-                        for worker in workers:
-                            wx, wy = worker.bbox_center
-                            zone = self.geofences.locate((wx / w, wy / h))
+                        dynamic = []
+                        machine_ids = {}
+                        for worker in (d for d in detections if d.class_name == "person"):
+                            zone = self.geofences.locate_detection(worker)
                             if zone is not None:
                                 active_zones.add(zone.name)
-
-                        for det in detections:
-                            x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
-                            color = (40, 180, 40)
-                            if det.class_name == "person":
-                                worker_label = f"W-{int(det.bbox_center[0] * 1000)}"
-                                has_violation = any(v[0] == worker_label for v in violations)
-                                color = (40, 40, 180) if has_violation else (40, 180, 40)
-                            elif det.class_name == "helmet":
-                                color = (180, 180, 40)
-                            elif det.class_name == "vest":
-                                color = (180, 40, 180)
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
-                            label = f"{det.class_name} ({det.confidence:.2f})"
-                            (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
-                            cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 6, y1), color, -1)
-                            cv2.putText(frame, label, (x1 + 3, y1 - 4),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
-
-                        if self._draw_zones:
-                            draw_zones(frame, self.geofences, active_zones)
-
-                        cv2.putText(frame, f"FPS: {1000.0/max(elapsed_ms,1.0):.1f} | Latency: {elapsed_ms:.1f}ms",
-                                    (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                         self.latest_active_zones = active_zones
+
+                    # Render detections (person polygons when available),
+                    # machines, static geofences and machine danger zones.
+                    draw_detections(frame, detections, violations,
+                                    machine_ids=machine_ids,
+                                    viz=self.vision_overlay_cfg)
+                    if self._draw_zones:
+                        draw_static_zones(frame, self.geofences, active_zones,
+                                          viz=self.vision_overlay_cfg)
+                        draw_dynamic_zones(frame, dynamic, viz=self.vision_overlay_cfg)
+                    n_machines = sum(1 for d in detections if d.is_machine)
+                    draw_status_bar(frame, 1000.0 / max(lat_ui, 1.0), lat_ui,
+                                    len(detections), n_machines)
 
                     ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     if ret:
@@ -238,15 +272,19 @@ class EdgeRuntime:
         # loop, and both video streams all reason about the SAME world.
         self.detector = build_detector(settings.vision)
         self.geofences = GeofenceEngine.from_yaml(settings.vision.geofences_file)
+        # One inference owner writes here; both video producers render it.
+        self.detection_state = DetectionState()
         self.video_stream = VideoStreamProducer(
             settings,
             draw_zones=True,
             detector=self.detector,
             geofences=self.geofences,
+            shared_state=self.detection_state,
         )
         self.detection_stream = VideoStreamProducer(
             settings,
             draw_zones=False,
             detector=self.detector,
             geofences=self.geofences,
+            shared_state=self.detection_state,
         )

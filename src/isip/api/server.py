@@ -142,8 +142,9 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
 
     @app.get(f"{prefix}/zones", tags=["edge"])
     def zones() -> dict:
-        """Live zone state: severity + authoritative active flags + geometry."""
-        active = set(runtime.video_stream.latest_active_zones)
+        """Live zone state: static + dynamic machine zones with geometry."""
+        active = runtime.detection_state.active_zones
+        active |= set(runtime.video_stream.latest_active_zones)
         active |= set(runtime.detection_stream.latest_active_zones)
         overlay = runtime.geofences.overlay_polys(
             runtime.settings.video.width,
@@ -151,6 +152,17 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
         )
         for name, info in overlay.items():
             info["active"] = name in active
+            info["dynamic"] = False
+        # Merge the machine-derived danger zones (dynamic).
+        for name, info in runtime.detection_state.dynamic_zones.items():
+            z = info.to_dict()
+            z["polygon"] = [
+                [round(x * runtime.settings.video.width, 1),
+                 round(y * runtime.settings.video.height, 1)]
+                for x, y in z["polygon"]
+            ]
+            z["active"] = name in active
+            overlay[name] = z
         return {"zones": overlay}
 
     @app.get(f"{prefix}/video-feed", tags=["edge"])

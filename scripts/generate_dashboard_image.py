@@ -1,12 +1,23 @@
-"""Generate annotated detection image for the dashboard."""
+"""Generate annotated detection image for the dashboard.
+
+Uses the same renderer as the live video streams so the still image shows the
+same person polygons, machine danger zones and static geofences as the feed.
+"""
 import cv2
 import numpy as np
-import random
 
 from isip.config import Settings
-from isip.vision.detector import build_detector, SyntheticDetector
+from isip.vision.detector import build_detector
 from isip.vision.geofence import GeofenceEngine
 from isip.vision.ppe import evaluate_ppe
+from isip.vision.renderer import (
+    draw_detections,
+    draw_dynamic_zones,
+    draw_static_zones,
+    draw_status_bar,
+)
+from isip.vision.tracking import MachineTracker, WorkerTracker
+from isip.vision.zones import DynamicZoneEngine
 
 settings = Settings.from_yaml("config/config.yaml")
 detector = build_detector(settings.vision)
@@ -15,57 +26,35 @@ detector = build_detector(settings.vision)
 frame = np.zeros((settings.video.height, settings.video.width, 3), dtype=np.uint8)
 frame[:] = (30, 40, 30)  # dark green-gray background
 
-# Get detections
+# Run the core pipeline
 detections = detector.detect(frame)
 workers = [d for d in detections if d.class_name == "person"]
-
-# Load geofences for zone visualization
 geofences = GeofenceEngine.from_yaml(settings.vision.geofences_file)
 
-# Draw geofence zones
-for zone in geofences.zones.values():
-    pts = np.array(zone.polygon, dtype=np.float32)
-    pts[:, 0] *= settings.video.width
-    pts[:, 1] *= settings.video.height
-    pts = pts.astype(int)
-    color = (0, 0, 180) if zone.severity == "CRITICAL" else (0, 120, 180)
-    cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=2)
-    cv2.putText(frame, zone.name, (pts[0][0], pts[0][1] - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+# Worker + machine trackers for stable ids / dynamic zones
+workers_ids = WorkerTracker().update([w.norm_center for w in workers])
+violations = evaluate_ppe(workers, detections, settings.vision, worker_ids=workers_ids)
 
-# Draw detections
-violations = evaluate_ppe(workers, detections, settings.vision)
-violation_map = {(label, gear) for label, gear, conf in violations}
+machines = [d for d in detections if d.class_name == "machine"]
+machine_tracker = MachineTracker(iou_threshold=0.3, max_age=10)
+tracks = [
+    t for t in machine_tracker.update([(m.x1, m.y1, m.x2, m.y2) for m in machines])
+    if t is not None
+]
+dynamic = DynamicZoneEngine().update(tracks)
 
-for det in detections:
-    x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
-    is_person = det.class_name == "person"
-    
-    if is_person:
-        # Check if worker has PPE violations
-        worker_label = f"W-{int(det.bbox_center[0] * 1000)}"
-        has_violation = any(v[0] == worker_label for v in violations)
-        color = (40, 40, 180) if has_violation else (40, 180, 40)  # Blue=violation, Green=compliant
-        
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        label = f"Worker {det.confidence:.2f}"
-        cv2.putText(frame, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-        
-        if has_violation:
-            missing = [v[1] for v in violations if v[0] == worker_label]
-            cv2.putText(frame, f"Missing: {', '.join(missing)}", 
-                       (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (40, 40, 180), 2)
-    else:
-        # PPE items
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (180, 180, 40), 1)
-        cv2.putText(frame, f"{det.class_name} {det.confidence:.2f}", 
-                   (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 40), 1)
+active = set()
+for worker in workers:
+    zone = geofences.locate_detection(worker)
+    if zone is not None:
+        active.add(zone.name)
 
-# Add info overlay
-cv2.putText(frame, f"ISIP Edge Node | Detections: {len(detections)} | Workers: {len(workers)}",
-            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-cv2.putText(frame, f"Violations: {len(violations)}",
-            (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (60, 60, 180), 2)
+# Render with the shared renderer
+draw_static_zones(frame, geofences, active, viz=settings.visualization)
+draw_dynamic_zones(frame, dynamic, viz=settings.visualization)
+draw_detections(frame, detections, violations, viz=settings.visualization)
+draw_status_bar(frame, max(detector.latency_ms and 1000.0 / max(detector.latency_ms, 1.0), 0),
+                detector.latency_ms, len(detections), len(machines))
 
 # Save image
 output_path = "dashboard/detection_output.jpg"
@@ -73,6 +62,8 @@ cv2.imwrite(output_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
 print(f"Saved annotated frame to {output_path}")
 print(f"Shape: {frame.shape}")
 print(f"Detections: {len(detections)}")
+print(f"Machines: {len(machines)}")
+print(f"Dynamic zones: {[z.name for z in dynamic]}")
 print(f"PPE Violations: {len(violations)}")
 for label, gear, conf in violations:
     print(f"  - {label} missing {gear}")

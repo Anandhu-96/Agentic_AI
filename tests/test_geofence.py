@@ -47,8 +47,8 @@ def test_engine_from_yaml(tmp_path):
         )
     )
     engine = GeofenceEngine.from_yaml(p)
-    assert engine.locate((0.5, 0.5)).name == "ZONE_A"
-    assert engine.locate((0.99, 0.99)) is None
+    assert engine.locate_point((0.5, 0.5)).name == "ZONE_A"
+    assert engine.locate_point((0.99, 0.99)) is None
 
 
 def test_as_pixels_scales_normalized_polygon():

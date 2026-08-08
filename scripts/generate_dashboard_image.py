@@ -68,7 +68,7 @@ def main() -> int:
         is_person = det.class_name == "person"
 
         if is_person:
-            worker_label = f"W-{int(det.bbox_center[0] * 1000)}"
+            worker_label = f"W-{int(det.bbox_center[0] * 50)}-{int(det.bbox_center[1] * 50)}"
             has_violation = any(v[0] == worker_label for v in violations)
             color = (40, 40, 180) if has_violation else (40, 180, 40)  # Blue=violation, Green=compliant
 

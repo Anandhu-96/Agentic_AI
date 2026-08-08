@@ -32,6 +32,11 @@ def _matches(worker: Detection, gear: Detection, iou_threshold: float) -> bool:
     return _iou(worker, gear) >= iou_threshold
 
 
+def _worker_label(worker: Detection) -> str:
+    wx, wy = worker.bbox_center
+    return f"W-{int(wx * 50)}-{int(wy * 50)}"
+
+
 def evaluate_ppe(
     workers: List[Detection],
     all_detections: List[Detection],
@@ -46,7 +51,7 @@ def evaluate_ppe(
     violations: List[Tuple[str, str, float]] = []
     required = set(config.ppe_required)
     for worker in workers:
-        label = f"W-{int(worker.bbox_center[0] * 1000)}"
+        label = _worker_label(worker)
         present: set[str] = set()
         for det in all_detections:
             if det.class_name in required and _matches(worker, det, iou_threshold):

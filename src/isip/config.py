@@ -80,6 +80,8 @@ class LoggingConfig(BaseModel):
     log_file: str = "logs/isip_edge.log"
     max_bytes: int = 5 * 1024 * 1024
     backup_count: int = 5
+    audit_max_bytes: int = 10 * 1024 * 1024
+    audit_backup_count: int = 3
 
 
 class EdgeConfig(BaseModel):

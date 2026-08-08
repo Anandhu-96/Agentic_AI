@@ -122,8 +122,6 @@ class EdgeOrchestrator:
 
                 with self.runtime.metrics.lock:
                     self.runtime.metrics.last_latency_ms = elapsed_ms
-                    actual_fps = 1000.0 / max(elapsed_ms, 1.0)
-                    self.runtime.metrics.last_fps = min(actual_fps, float(self.settings.edge.fps_limit))
                     self.runtime.metrics.inference_count += 1
 
                 if frame_idx % 15 == 0:
@@ -171,7 +169,7 @@ class EdgeOrchestrator:
                 "zone intrusion zone=%s severity=%s worker=%s confidence=%.2f",
                 zone.name,
                 severity.value,
-                f"W-{int(cx * 1000)}",
+                f"W-{int(cx * 50)}-{int(cy * 50)}",
                 worker.confidence,
             )
             if zone.action == "TRIP_RELAY":
@@ -190,10 +188,10 @@ class EdgeOrchestrator:
 
     async def _check_ppe(self, workers: List[Detection], all_dets: List[Detection]) -> None:
         violations = evaluate_ppe(workers, all_dets, self.settings.vision)
-        active = set()
+        current_keys = set()
         for label, gear, conf in violations:
             key = (label, gear)
-            active.add(key)
+            current_keys.add(key)
             if key in self._active_ppe:
                 continue
             self._active_ppe.add(key)
@@ -207,14 +205,16 @@ class EdgeOrchestrator:
             )
             await self.runtime.broker.publish(event)
             self._audit(event)
-            logger.warning(
-                "ppe violation worker=%s missing=%s severity=%s confidence=%.2f",
+            logger.debug(
+                "ppe violation NEW worker=%s missing=%s severity=%s confidence=%.2f",
                 label,
                 gear,
                 event.severity.value,
                 conf,
             )
-        self._active_ppe = active
+        cleared = self._active_ppe - current_keys
+        for key in cleared:
+            self._active_ppe.discard(key)
 
     async def _trip_relay(self, reason: str) -> None:
         if self.runtime.plc.is_locked:

@@ -28,6 +28,7 @@ import logging
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -102,6 +103,7 @@ class VideoStreamProducer:
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._error: Optional[Exception] = None
+        self._frame_times: "deque[float]" = deque(maxlen=30)
 
     @property
     def error(self) -> Optional[Exception]:
@@ -172,7 +174,14 @@ class VideoStreamProducer:
                         started = time.perf_counter()
                         detections = self.detector.detect(frame)
                         elapsed_ms = (time.perf_counter() - started) * 1000.0
-                        current_fps = 1000.0 / elapsed_ms if elapsed_ms > 0 else 0.0
+
+                        self._frame_times.append(time.perf_counter())
+                        if len(self._frame_times) >= 2:
+                            dt = self._frame_times[-1] - self._frame_times[0]
+                            actual_fps = (len(self._frame_times) - 1) / dt if dt > 0 else 0.0
+                        else:
+                            actual_fps = 0.0
+                        current_fps = min(actual_fps, float(self.settings.edge.fps_limit) * 1.5)
                         if self.metrics is not None:
                             self.metrics.record_inference(elapsed_ms, current_fps)
 
@@ -218,7 +227,8 @@ class VideoStreamProducer:
                             x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
                             color = (40, 180, 40)
                             if det.class_name == "person":
-                                worker_label = f"W-{int(det.bbox_center[0] * 1000)}"
+                                wx, wy = det.bbox_center
+                                worker_label = f"W-{int(wx * 50)}-{int(wy * 50)}"
                                 has_violation = any(v[0] == worker_label for v in violations)
                                 color = (40, 40, 180) if has_violation else (40, 180, 40)
                             elif det.class_name == "helmet":
@@ -279,6 +289,8 @@ class EdgeRuntime:
         self.audit = AuditLogger(
             audit_dir=settings.logging.audit_dir,
             node_id=settings.edge.node_id,
+            max_bytes=settings.logging.audit_max_bytes,
+            backup_count=settings.logging.audit_backup_count,
         )
         self.plc = PlcRelay(
             gpio=settings.control.estop_gpio,

@@ -1,5 +1,8 @@
 # Restricted zone definitions for point-in-polygon geofencing.
 # Coordinates are normalized (0..1) relative to the frame width/height.
+
+# DANGER_ZONE_A is an intentionally static CRITICAL zone. It represents a fixed
+# physical area (e.g. a high-voltage cell) and is not generated from detections.
 zones:
   DANGER_ZONE_A:
     description: "High-voltage switchyard - no entry without work permit"
@@ -11,13 +14,9 @@ zones:
       - [0.65, 0.75]
       - [0.40, 0.75]
     action: "TRIP_RELAY"
-  EXCLUSION_ZONE_B:
-    description: "Robotic arm cell - hard hat and vest required"
-    severity: "WARNING"
-    polygon:
-      - [0.05, 0.10]
-      - [0.30, 0.10]
-      - [0.32, 0.20]
-      - [0.25, 0.35]
-      - [0.05, 0.35]
-    action: "ALERT_ONLY"
+
+# NOTE: machine-following exclusion/danger zones are NOT defined here. They are
+# generated dynamically per frame from tracked machine detections in
+# src/isip/vision/zones.py and named MACHINE_DANGER_<id>, so the live overlay
+# keeps pace with the machine instead of being a fixed polygon stamped on the
+# image.

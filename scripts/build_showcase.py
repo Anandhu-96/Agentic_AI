@@ -111,6 +111,15 @@ LANDING_PAGE = """<!DOCTYPE html>
     <a class="btn" href="https://github.com/Anandhu-96/Agentic_AI">View source on GitHub</a>
   </p>
 
+  <h2 style="margin-top:1.4rem; color:#fff; font-size:1.1rem;">Live detection from the demo video</h2>
+  <p style="color:#64748b; font-size:0.85rem; margin:0.3rem 0 0.8rem;">
+    Real annotated frames extracted from <code>We_want_the_vedio_of_the_engin.mp4</code>
+    using the same renderer as the edge node.
+  </p>
+  <div class="img-row" id="gallery">
+    __GALLERY__
+  </div>
+
   <div class="note">
     <strong>Live video &amp; telemetry note:</strong> this static page cannot run the
     Python edge node. To see the real-time feed and control plane, run
@@ -123,6 +132,21 @@ LANDING_PAGE = """<!DOCTYPE html>
 </body>
 </html>
 """
+
+
+def _gallery_figures() -> str:
+    """Figure markup for detection frames sampled from the demo video."""
+    gallery = DASH / "gallery"
+    frames = sorted(gallery.glob("detection_*.jpg")) if gallery.is_dir() else []
+    if not frames:
+        return '<p style="color:#64748b; font-size:0.85rem;">(run <code>scripts/generate_detection_gallery.py</code> to add frames)</p>'
+    figs = []
+    for f in frames:
+        figs.append(
+            f'<figure><img src="__IMG__gallery/{f.name}" alt="Detection frame from the demo video" />'
+            f'<figcaption>{f.stem.replace("detection_", "Frame ")}</figcaption></figure>'
+        )
+    return "\n    ".join(figs)
 
 
 def main() -> None:
@@ -140,17 +164,28 @@ def main() -> None:
     if demo.exists():
         shutil.copyfile(demo, DOCS / "isip-dashboard.html")
 
+    # Detection frames sampled from the demo video.
+    gallery_src = DASH / "gallery"
+    if gallery_src.is_dir():
+        dst = DOCS / "gallery"
+        dst.mkdir(exist_ok=True)
+        for f in sorted(gallery_src.glob("detection_*.jpg")):
+            shutil.copyfile(f, dst / f.name)
+
+    gallery = _gallery_figures()
+    page = LANDING_PAGE.replace("__GALLERY__", gallery)
+
     # docs/ layout (Pages configured with folder /docs).
     (DOCS / "index.html").write_text(
-        LANDING_PAGE.replace("__IMG__", "").replace("__DASH__", "isip-dashboard.html"),
+        page.replace("__IMG__", "").replace("__DASH__", "isip-dashboard.html"),
         encoding="utf-8",
     )
 
     # Root layout (Pages deploying from repo root): reuse the already-tracked
-    # dashboard/ assets so the live site shows the showcase with no Settings
+    # dashboard/ assets so the site shows the showcase with no Settings
     # changes and nothing gets duplicated at the repo root.
     (ROOT / "index.html").write_text(
-        LANDING_PAGE.replace("__IMG__", "dashboard/").replace("__DASH__", "dashboard/isip-dashboard.html"),
+        page.replace("__IMG__", "dashboard/").replace("__DASH__", "dashboard/isip-dashboard.html"),
         encoding="utf-8",
     )
 

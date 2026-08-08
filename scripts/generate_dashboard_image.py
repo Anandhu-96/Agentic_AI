@@ -13,6 +13,7 @@ from isip.vision.ppe import evaluate_ppe
 from isip.vision.renderer import (
     draw_detections,
     draw_dynamic_zones,
+    draw_side_panel,
     draw_static_zones,
     draw_status_bar,
 )
@@ -56,6 +57,11 @@ draw_detections(frame, detections, violations, worker_ids=workers_ids,
                 viz=settings.visualization)
 draw_status_bar(frame, max(detector.latency_ms and 1000.0 / max(detector.latency_ms, 1.0), 0),
                 detector.latency_ms, len(detections), len(machines))
+
+# Add the self-explaining problem panel beside the frame.
+frame = draw_side_panel(frame, detections, violations,
+                        active_zones=active,
+                        dynamic_zones=dynamic)
 
 # Save image
 output_path = "dashboard/detection_output.jpg"

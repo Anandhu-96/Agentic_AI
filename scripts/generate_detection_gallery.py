@@ -26,6 +26,7 @@ from isip.vision.ppe import evaluate_ppe
 from isip.vision.renderer import (
     draw_detections,
     draw_dynamic_zones,
+    draw_side_panel,
     draw_static_zones,
     draw_status_bar,
 )
@@ -85,6 +86,8 @@ def generate_video_samples(settings: Settings, synthetic: bool) -> list[Path]:
         draw_dynamic_zones(frame, dynamic, viz=settings.visualization)
         draw_status_bar(frame, detector.latency_ms and 30.0, detector.latency_ms,
                         len(detections), len(machines))
+        frame = draw_side_panel(frame, detections, violations,
+                                active_zones=active, dynamic_zones=dynamic)
 
         out_path = OUT_DIR / f"detection_{len(out):02d}.jpg"
         cv2.imwrite(str(out_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 90])

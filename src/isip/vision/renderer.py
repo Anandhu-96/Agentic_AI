@@ -171,3 +171,64 @@ def draw_status_bar(frame: np.ndarray, fps: float, latency_ms: float,
     text = f"FPS:{fps:.1f} Lat:{latency_ms:.1f}ms det:{detections} mach:{machines}"
     cv2.putText(frame, text, (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX,
                 0.55, (255, 255, 255), 1)
+
+
+def draw_side_panel(frame: np.ndarray, detections: List[Detection],
+                    violations: List[Tuple[str, str, float]],
+                    active_zones: Optional[Set[str]] = None,
+                    dynamic_zones: Optional[List] = None,
+                    panel_width: int = 260) -> np.ndarray:
+    """Returns a canvas with the frame and a text panel listing the detected
+    problems on the right side (PPE violations, zone breaches, machine zones).
+
+    This makes the still image self-explaining for the dashboard/showcase.
+    """
+    h, w = frame.shape[:2]
+    canvas = np.full((h, w + panel_width, 3), 18, dtype=np.uint8)
+    canvas[:, :w] = frame
+
+    y = 22
+    col = w + 8
+    cv2.line(canvas, (w, 0), (w, h), (70, 70, 70), 1)
+    cv2.putText(canvas, "DETECTED PROBLEMS", (col, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+    y += 24
+
+    def write_line(text, color=(230, 230, 230)):
+        nonlocal y
+        cv2.putText(canvas, text, (col, y), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, color, 1)
+        y += 20
+
+    # 1. PPE violations
+    if violations:
+        write_line("PPE violations:", (60, 60, 255))
+        for label, gear, conf in violations[:6]:
+            write_line(f"  {label}: missing {gear}", (80, 120, 255))
+    else:
+        write_line("PPE violations: none", (60, 200, 60))
+
+    # 2. Static zone state
+    if active_zones:
+        write_line("Zones ACTIVE:", (60, 60, 255))
+        for z in sorted(active_zones)[:6]:
+            write_line(f"  {z}", (80, 120, 255))
+    else:
+        write_line("Static zones: cleared", (60, 200, 60))
+
+    # 3. Dynamic machine danger zones
+    dyn = dynamic_zones or []
+    if dyn:
+        write_line("Machine danger zones:", (60, 60, 255))
+        for z in dyn[:6]:
+            name = getattr(z, "name", str(z))
+            write_line(f"  {name}", (80, 120, 255))
+    else:
+        write_line("Machine zones: none", (60, 200, 60))
+
+    # 4. Detected object tally
+    persons = sum(1 for d in detections if d.is_person)
+    machines = sum(1 for d in detections if d.is_machine)
+    write_line(f"Persons: {persons}   Machines: {machines}", (200, 200, 200))
+
+    return canvas

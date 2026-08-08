@@ -4,106 +4,1186 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>ISIP — Industrial Safety Intelligence Platform</title>
-<meta name="description" content="Edge-first multi-modal safety AI for industrial facilities: real-time vision, geofencing, PPE compliance, IIoT telemetry, RUL estimation, and PLC E-Stop control." />
+<meta name="description" content="Edge-first multi-modal safety AI for industrial facilities: real-time vision, PPE compliance, geofencing, machine danger zones, IIoT telemetry, RUL estimation and PLC E-Stop control." />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@latest"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      fontFamily: {
+        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+      },
+      keyframes: {
+        'flash-badge': {
+          '0%, 100%': { backgroundColor: '#e11d48', color: '#ffffff' },
+          '50%': { backgroundColor: '#881337', color: '#ffffff' },
+        },
+      },
+      animation: {
+        flashbadge: 'flash-badge 0.7s steps(1) infinite',
+      },
+    },
+  },
+};
+</script>
 <style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #0b1220; color: #e2e8f0; line-height: 1.6;
-    padding: 2.5rem 1.25rem;
+  body { background: #0f172a; }
+  .scanline::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image: repeating-linear-gradient(0deg,
+      rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px,
+      transparent 2px, transparent 4px);
   }
-  .wrap { max-width: 900px; margin: 0 auto; }
-  header { border-bottom: 1px solid #1e293b; padding-bottom: 1.5rem; margin-bottom: 1.5rem; }
-  h1 { font-size: 1.6rem; color: #fff; letter-spacing: 0.01em; }
-  .sub { color: #22d3ee; font-size: 0.85rem; letter-spacing: 0.2em; margin-top: 0.25rem; }
-  p { color: #94a3b8; margin: 0.6rem 0; }
-  ul { list-style: none; margin: 1rem 0; }
-  li::before { content: "▸ "; color: #34d399; }
-  li { padding: 0.15rem 0; }
-  .img-row { display: grid; gap: 1rem; margin: 1.5rem 0; }
-  @media (min-width: 720px) { .img-row { grid-template-columns: 1fr 1fr; } }
-  figure { border: 1px solid #1e293b; border-radius: 10px; overflow: hidden; background: #0f172a; }
-  img { width: 100%; height: auto; display: block; }
-  figcaption { padding: 0.5rem 0.75rem; font-size: 0.8rem; color: #64748b; }
-  a { color: #22d3ee; }
-  .btn {
-    display: inline-block; margin: 0.25rem 0.5rem 0.25rem 0; padding: 0.55rem 1rem;
-    border: 1px solid #164e63; border-radius: 8px; background: #0e2a38; color: #67e8f9;
-    text-decoration: none; font-size: 0.9rem;
-  }
-  .btn:hover { background: #134e5f; }
-  .note {
-    margin-top: 1.5rem; padding: 0.9rem 1rem; border: 1px solid #3b2f0a;
-    background: #1a1405; border-radius: 8px; color: #fbbf24; font-size: 0.85rem;
-  }
-  footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #1e293b; color: #475569; font-size: 0.8rem; }
-  code { background: #1e293b; padding: 0.1rem 0.35rem; border-radius: 4px; color: #a5b4fc; }
+  .terminal::-webkit-scrollbar { width: 6px; height: 6px; }
+  .terminal::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+  .terminal::-webkit-scrollbar-track { background: transparent; }
+  .alert-active { animation: flash-badge 0.7s steps(1) infinite; }
+  .kpi-card { transition: background 0.3s; }
+  .kpi-card:hover { background: #1e293b; }
 </style>
 </head>
-<body>
-<div class="wrap">
-  <header>
-    <h1>ISIP — Industrial Safety Intelligence Platform</h1>
-    <div class="sub">EDGE-FIRST · MULTI-MODAL · OFFLINE-SAFE</div>
+<body class="bg-slate-950 text-slate-100 font-sans antialiased min-h-screen">
+
+<div class="max-w-[1700px] mx-auto p-4 space-y-4">
+
+  <!-- ================= SIMULATION MODE NOTICE ================= -->
+  <div id="sim-notice" class="hidden items-center gap-3 border border-amber-500/40 bg-amber-500/10 rounded-xl px-4 py-2.5 text-[11px] text-amber-300">
+    <i data-lucide="flask-conical" class="w-4 h-4 shrink-0"></i>
+    <span><strong>SIMULATION MODE</strong> — no edge node detected on <code class="text-amber-200">127.0.0.1:8080</code>, so all telemetry,
+      detections and events are locally emulated. For the live system run <code class="text-amber-200">python scripts/run_edge.py</code> and refresh.</span>
+    <button id="btn-dismiss-sim" class="ml-auto text-amber-400 hover:text-amber-200 text-[10px] px-2 py-1 rounded border border-amber-500/40">DISMISS</button>
+  </div>
+
+  <!-- ================= HEADER ================= -->
+  <header class="border border-slate-800 bg-slate-900/70 rounded-xl px-5 py-4 backdrop-blur flex flex-wrap items-center gap-x-6 gap-y-3">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-cyan-600 flex items-center justify-center text-black shadow-lg shadow-emerald-500/30">
+        <i data-lucide="shield-alert" class="w-6 h-6"></i>
+      </div>
+      <div>
+        <h1 class="text-sm sm:text-lg font-bold tracking-tight text-white leading-tight">
+          Industrial Safety Intelligence Platform <span class="text-slate-400 font-normal">(ISIP)</span>
+        </h1>
+        <p class="text-[11px] tracking-[0.25em] text-cyan-400">EDGE NODE 01</p>
+      </div>
+    </div>
+
+    <div class="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700 bg-slate-800/50 text-[11px]">
+      <i data-lucide="microwave" class="w-4 h-4 text-cyan-400"></i>
+      NVIDIA JETSON ORIN NANO
+      <span class="text-cyan-500">(INT8 Quantized)</span>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2 ml-auto">
+      <span id="op-pill" class="flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-[11px] font-bold tracking-wider">
+        <span id="op-dot" class="w-2 h-2 rounded-full bg-emerald-400"></span>
+        <span id="op-text">OPERATIONAL</span>
+      </span>
+      <span class="flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700 bg-slate-800/50 text-[11px] text-slate-300">
+        <i data-lucide="zap" class="w-3.5 h-3.5 text-emerald-400 animate-pulse"></i>
+        <span id="edge-text">EDGE INFERENCE ACTIVE</span>
+      </span>
+      <span class="flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700 bg-slate-800/50 text-[11px] text-slate-300">
+        <i data-lucide="gauge" class="w-4 h-4 text-cyan-400"></i>
+        Latency <strong class="text-emerald-300" id="m-latency">--</strong> ms
+      </span>
+      <span class="flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700 bg-slate-800/50 text-[11px] text-slate-300">
+        <i data-lucide="clapperboard" class="w-4 h-4 text-cyan-400"></i>
+        <strong class="text-cyan-300" id="m-fps">--</strong> FPS
+      </span>
+      <span class="flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700 bg-slate-800/50 text-[11px] text-slate-300">
+        <i data-lucide="triangle-alert" class="w-4 h-4 text-rose-400"></i>
+        Alerts <strong class="text-rose-300" id="m-alerts">0</strong>
+      </span>
+      <span class="flex items-center gap-2 px-3 py-1.5 rounded-full border border-cyan-500/40 bg-cyan-500/10 text-[11px] text-cyan-300">
+        <i data-lucide="network" class="w-4 h-4"></i>
+        <span class="hidden sm:inline">Network: </span>OFFLINE EDGE RESILIENT
+      </span>
+      <span id="backend-pill" class="flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700 bg-slate-800/50 text-[11px] text-slate-300">
+        <i data-lucide="heart-pulse" class="w-3.5 h-3.5"></i>
+        <span id="backend-text">BACKEND: CHECKING...</span>
+      </span>
+    </div>
   </header>
 
-  <p>
-    An edge-first, multi-modal safety AI system for industrial facilities. It
-    fuses real-time vision (YOLOv8 / YOLO-World, person segmentation, PPE
-    compliance, polygon geofencing and machine danger zones) with IIoT
-    telemetry (temperature, vibration, toxic gas), anomaly detection, Remaining
-    Useful Life (RUL) estimation, and a FastAPI control plane that trips a PLC
-    E-Stop relay &mdash; all with a sub-20ms safety loop, running fully offline.
-  </p>
+  <!-- ================= KPI STRIP ================= -->
+  <section class="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2">
+    <div class="kpi-card rounded-lg border border-slate-800 bg-slate-900 px-3 py-2.5">
+      <div class="text-[9px] tracking-widest text-slate-500">LATENCY</div>
+      <div class="text-lg font-bold text-emerald-300"><span id="k-latency">14.2</span><span class="text-[10px] text-slate-500 ml-1">ms</span></div>
+    </div>
+    <div class="kpi-card rounded-lg border border-slate-800 bg-slate-900 px-3 py-2.5">
+      <div class="text-[9px] tracking-widest text-slate-500">THROUGHPUT</div>
+      <div class="text-lg font-bold text-cyan-300"><span id="k-fps">70</span><span class="text-[10px] text-slate-500 ml-1">FPS</span></div>
+    </div>
+    <div class="kpi-card rounded-lg border border-slate-800 bg-slate-900 px-3 py-2.5">
+      <div class="text-[9px] tracking-widest text-slate-500">UPTIME</div>
+      <div class="text-lg font-bold text-slate-200"><span id="k-uptime">00:00:00</span></div>
+    </div>
+    <div class="kpi-card rounded-lg border border-slate-800 bg-slate-900 px-3 py-2.5">
+      <div class="text-[9px] tracking-widest text-slate-500">INFERENCES</div>
+      <div class="text-lg font-bold text-slate-200"><span id="k-inf">0</span></div>
+    </div>
+    <div class="kpi-card rounded-lg border border-slate-800 bg-slate-900 px-3 py-2.5">
+      <div class="text-[9px] tracking-widest text-slate-500">ALERTS</div>
+      <div class="text-lg font-bold text-rose-300"><span id="k-alerts">0</span></div>
+    </div>
+    <div class="kpi-card rounded-lg border border-slate-800 bg-slate-900 px-3 py-2.5">
+      <div class="text-[9px] tracking-widest text-slate-500">WORKERS</div>
+      <div class="text-lg font-bold text-amber-300"><span id="k-workers">3</span></div>
+    </div>
+    <div class="kpi-card rounded-lg border border-slate-800 bg-slate-900 px-3 py-2.5">
+      <div class="text-[9px] tracking-widest text-slate-500">MACHINES</div>
+      <div class="text-lg font-bold text-slate-300"><span id="k-machines">1</span></div>
+    </div>
+    <div class="kpi-card rounded-lg border border-slate-800 bg-slate-900 px-3 py-2.5">
+      <div class="text-[9px] tracking-widest text-slate-500">E-STOP</div>
+      <div id="k-estop" class="text-lg font-bold text-emerald-300">ARMED</div>
+    </div>
+  </section>
 
-  <ul>
-    <li>Real-time object detection + person segmentation polygons</li>
-    <li>Static geofencing and dynamic machine-derived danger zones</li>
-    <li>PPE compliance rules (helmet / vest / gloves)</li>
-    <li>IIoT telemetry, anomaly detection, and RUL estimation</li>
-    <li>Async event broker + audit ledger + FastAPI control plane</li>
-    <li>Streamlit operator dashboard with live video overlay</li>
-  </ul>
+  <!-- ================= MAIN GRID ================= -->
+  <main class="grid grid-cols-1 xl:grid-cols-3 gap-4">
 
-  <div class="img-row">
-    <figure>
-      <img src="dashboard/detection_output.jpg" alt="Annotated detection frame with person polygons, machine danger zone and geofences" />
-      <figcaption>Detection overlay &mdash; person polygons, machine danger zone, static geofences</figcaption>
-    </figure>
-    <figure>
-      <img src="dashboard/geofence_test.jpg" alt="Geofence zone visualization" />
-      <figcaption>Restricted-zone geofencing</figcaption>
-    </figure>
-  </div>
+    <!-- ====== COLUMN 1: VIDEO STREAM ====== -->
+    <section class="xl:col-span-1 rounded-xl overflow-hidden border border-slate-800 bg-slate-900 flex flex-col">
+      <div class="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-800">
+        <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
+          <i data-lucide="camera" class="w-4 h-4 text-cyan-500"></i><span id="video-handle">LIVE FEED // CAM-01</span>
+        </span>
+        <span class="text-[10px] text-slate-500 flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>REC
+          <span id="feed-clock" class="ml-1">--:--:--</span>
+        </span>
+      </div>
 
-  <p>
-    <a class="btn" href="dashboard/isip-dashboard.html">Open interactive dashboard demo</a>
-    <a class="btn" href="https://github.com/Anandhu-96/Agentic_AI">View source on GitHub</a>
-  </p>
+      <div id="video-wrap" class="relative aspect-video bg-[#0b1118] overflow-hidden scanline">
+        <img id="video-feed" src="" class="absolute inset-0 w-full h-full object-contain" alt="Live Video Feed" />
+        <canvas id="video-canvas" class="absolute inset-0 w-full h-full object-contain pointer-events-none" width="1280" height="720"></canvas>
 
-  <h2 style="margin-top:1.4rem; color:#fff; font-size:1.1rem;">Live detection from the demo video</h2>
-  <p style="color:#64748b; font-size:0.85rem; margin:0.3rem 0 0.8rem;">
-    Real annotated frames extracted from <code>We_want_the_vedio_of_the_engin.mp4</code>
-    using the same renderer as the edge node.
-  </p>
-  <div class="img-row" id="gallery">
-    <figure><img src="dashboard/gallery/detection_00.jpg" alt="Detection frame from the demo video" /><figcaption>Frame 00</figcaption></figure>
-    <figure><img src="dashboard/gallery/detection_01.jpg" alt="Detection frame from the demo video" /><figcaption>Frame 01</figcaption></figure>
-    <figure><img src="dashboard/gallery/detection_02.jpg" alt="Detection frame from the demo video" /><figcaption>Frame 02</figcaption></figure>
-    <figure><img src="dashboard/gallery/detection_03.jpg" alt="Detection frame from the demo video" /><figcaption>Frame 03</figcaption></figure>
-    <figure><img src="dashboard/gallery/detection_04.jpg" alt="Detection frame from the demo video" /><figcaption>Frame 04</figcaption></figure>
-    <figure><img src="dashboard/gallery/detection_05.jpg" alt="Detection frame from the demo video" /><figcaption>Frame 05</figcaption></figure>
-  </div>
+        <div id="breach-banner" class="hidden absolute top-3 left-1/2 -translate-x-1/2 z-20 px-4 py-2 rounded-md border-2 border-rose-500 bg-rose-600 text-white font-bold text-xs tracking-widest whitespace-nowrap shadow-xl shadow-rose-900/40">
+          CRITICAL: ZONE BREACH DETECTED
+        </div>
 
-  <div class="note">
-    <strong>Live video &amp; telemetry note:</strong> this static page cannot run the
-    Python edge node. To see the real-time feed and control plane, run
-    <code>python scripts/run_edge.py</code> and open
-    <code>http://127.0.0.1:8080/edge/video-snapshot</code> locally.
-  </div>
+        <div class="absolute bottom-3 left-3 z-20 flex flex-col gap-1 text-[10px]">
+          <div id="feed-summary" class="flex items-center gap-2 px-2 py-1 bg-black/60 rounded text-emerald-400 border border-emerald-500/30">
+            <i data-lucide="hard-hat" class="w-3 h-3"></i><span id="feed-summary-text">3 workers · 0 violations</span>
+          </div>
+          <div id="breach-tag" class="hidden items-center gap-2 px-2 py-1 bg-rose-600/80 rounded text-white border border-rose-500 font-bold">
+            <i data-lucide="triangle-alert" class="w-3 h-3"></i>ZONE BREACH
+          </div>
+        </div>
+      </div>
 
-  <footer>ISIP &middot; Neurobots Championship 2026 &middot; MIT License</footer>
+      <div class="p-3 flex flex-col gap-2">
+        <div class="grid grid-cols-2 gap-2">
+          <button id="btn-intrusion"
+            class="flex items-center justify-center gap-2 px-3 py-2.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 text-xs font-bold hover:bg-amber-500/20 active:scale-[0.98] transition">
+            <i data-lucide="biohazard" class="w-4 h-4"></i><span id="btn-intrusion-text">Trigger Intrusion</span>
+          </button>
+          <button id="btn-ppe"
+            class="flex items-center justify-center gap-2 px-3 py-2.5 rounded border border-rose-500/40 bg-rose-500/10 text-rose-300 text-xs font-bold hover:bg-rose-500/20 active:scale-[0.98] transition">
+            <i data-lucide="hard-hat" class="w-4 h-4"></i>Toggle PPE Violation
+          </button>
+        </div>
+        <div class="flex items-center justify-between text-[10px] text-slate-500 px-1">
+          <span>Model: <span class="text-slate-300">yolov8s-world · trt_int8</span></span>
+          <span>IOU 0.5 / conf 0.45</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== COLUMN 2: PPE + ZONES + RUL ====== -->
+    <section class="xl:col-span-1 rounded-xl border border-slate-800 bg-slate-900 flex flex-col gap-4 p-4">
+
+      <!-- PPE compliance -->
+      <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
+            <i data-lucide="hard-hat" class="w-4 h-4 text-amber-400"></i>PPE COMPLIANCE // LIVE
+          </span>
+          <span id="ppe-score" class="text-xs font-bold text-emerald-300">100%</span>
+        </div>
+        <div id="ppe-list" class="space-y-1.5 max-h-44 overflow-y-auto terminal"></div>
+      </div>
+
+      <!-- Zones -->
+      <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
+        <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2 mb-2">
+          <i data-lucide="map-pin" class="w-4 h-4 text-cyan-400"></i>GEOFENCE &amp; MACHINE DANGER ZONES
+        </span>
+        <div id="zone-list" class="space-y-1.5"></div>
+      </div>
+
+      <!-- RUL -->
+      <div class="rounded-lg border border-slate-800 bg-slate-950 p-3 flex flex-col items-center">
+        <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2 mb-1 self-start">
+          <i data-lucide="heart-pulse" class="w-4 h-4 text-emerald-400"></i>REMAINING USEFUL LIFE (RUL)
+        </span>
+        <div class="relative w-40 h-40">
+          <canvas id="rul-chart"></canvas>
+          <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            <span id="rul-health" class="text-2xl font-black text-emerald-300">100%</span>
+            <span class="text-[9px] text-slate-500 tracking-widest">HEALTH</span>
+          </div>
+        </div>
+        <div class="mt-1 text-[10px] text-slate-400">Remaining life: <strong id="rul-hours" class="text-slate-200">100,000 h</strong></div>
+      </div>
+    </section>
+
+    <!-- ====== COLUMN 3: TELEMETRY + ARCHITECTURE ====== -->
+    <section class="xl:col-span-1 rounded-xl border border-slate-800 bg-slate-900 flex flex-col gap-4 p-4">
+      <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
+            <i data-lucide="activity" class="w-4 h-4 text-emerald-500"></i>IIoT TELEMETRY // LIVE
+          </span>
+          <span id="chart-alarm" class="hidden text-[10px] font-bold text-rose-400 alert-active">THERMAL ANOMALY</span>
+        </div>
+        <div class="h-52">
+          <canvas id="telemetry-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Sensor readouts -->
+      <div class="grid grid-cols-3 gap-2">
+        <div id="sensor-temp" class="rounded-lg border border-slate-800 bg-slate-950 p-2.5">
+          <div class="flex items-center gap-1.5 text-[9px] text-slate-500"><i data-lucide="flame" class="w-3 h-3 text-orange-400"></i>TMP_BRG_02</div>
+          <div class="text-sm font-bold text-cyan-300"><span id="sensor-temp-v">68.0</span> °C</div>
+          <div id="sensor-temp-s" class="text-[9px] text-emerald-400">NORMAL</div>
+        </div>
+        <div id="sensor-vib" class="rounded-lg border border-slate-800 bg-slate-950 p-2.5">
+          <div class="flex items-center gap-1.5 text-[9px] text-slate-500"><i data-lucide="vibrate" class="w-3 h-3 text-cyan-400"></i>VIB_MTR_01</div>
+          <div class="text-sm font-bold text-cyan-300"><span id="sensor-vib-v">40.0</span> Hz</div>
+          <div id="sensor-vib-s" class="text-[9px] text-emerald-400">NORMAL</div>
+        </div>
+        <div id="sensor-gas" class="rounded-lg border border-slate-800 bg-slate-950 p-2.5">
+          <div class="flex items-center gap-1.5 text-[9px] text-slate-500"><i data-lucide="wind" class="w-3 h-3 text-purple-400"></i>GAS_CO_03</div>
+          <div class="text-sm font-bold text-cyan-300"><span id="sensor-gas-v">7.0</span> ppm</div>
+          <div id="sensor-gas-s" class="text-[9px] text-emerald-400">NORMAL</div>
+        </div>
+      </div>
+
+      <div class="rounded-lg border border-slate-800 bg-slate-950 p-3 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-[11px] text-slate-400"><i data-lucide="flame" class="w-4 h-4 text-orange-400 inline mr-1"></i>Simulate Motor Overheat</span>
+          <span id="temp-readout" class="text-sm font-bold text-cyan-300">68.0 °C</span>
+        </div>
+        <input id="temp-slider" type="range" min="55" max="100" value="68" class="w-full accent-rose-500" />
+        <div class="flex justify-between text-[9px] text-slate-600"><span>WARN 85°C</span><span>CRITICAL 95°C</span><span>100°C</span></div>
+      </div>
+
+      <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
+        <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2 mb-3">
+          <i data-lucide="network" class="w-4 h-4 text-cyan-400"></i>SYSTEM ARCHITECTURE
+        </span>
+        <div class="space-y-1.5">
+          <div class="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-3 py-2 text-[11px]">
+            <i data-lucide="camera" class="w-4 h-4 text-slate-400"></i><span class="text-slate-300">Camera / Sensors</span>
+            <span class="text-slate-600">(CCTV • YOLO-World)</span>
+          </div>
+          <div class="text-center text-slate-600 text-xs"><i data-lucide="arrow-down" class="w-4 h-4 inline"></i></div>
+          <div class="flex items-center gap-2 rounded border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-[11px]">
+            <i data-lucide="chip" class="w-4 h-4 text-cyan-400"></i><span class="text-cyan-300 font-semibold">Edge Node (TensorRT INT8)</span>
+            <span class="ml-auto text-[9px] text-slate-500">~14 ms</span>
+          </div>
+          <div class="text-center text-slate-600 text-xs"><i data-lucide="arrow-down" class="w-4 h-4 inline"></i></div>
+          <div class="flex items-center gap-2 rounded border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-[11px]">
+            <i data-lucide="circuit-board" class="w-4 h-4 text-emerald-400"></i><span class="text-emerald-300 font-semibold">Local PLC Relay</span>
+            <span class="ml-auto text-[9px] text-slate-500">&lt;50 ms</span>
+          </div>
+          <div class="text-center text-slate-600 text-xs"><i data-lucide="arrow-down" class="w-4 h-4 inline"></i></div>
+          <div class="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-3 py-2 text-[11px]">
+            <i data-lucide="cloud" class="w-4 h-4 text-slate-400"></i><span class="text-slate-300">Async Cloud Sync</span>
+            <span class="ml-auto text-[9px] text-slate-500">deferred</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= ROW 2: EVENTS / LEDGER / ALERTS ================= -->
+  <main class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+    <!-- Safety event stream -->
+    <section class="rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden lg:col-span-1 min-h-[360px]">
+      <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800">
+        <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
+          <i data-lucide="radio" class="w-4 h-4 text-emerald-400"></i>SAFETY EVENT STREAM
+        </span>
+        <span class="text-[10px] text-slate-600 flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>LIVE</span>
+      </div>
+      <div id="event-stream" class="terminal flex-1 p-3 overflow-y-auto text-[10px] leading-relaxed bg-[#020617]">
+        <div class="text-slate-500">[ISIP] edge-inference engine online · yolov8s-world · cam-01</div>
+      </div>
+    </section>
+
+    <!-- Audit ledger / API inspector -->
+    <section class="rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden lg:col-span-1 min-h-[360px]">
+      <div class="flex border-b border-slate-800">
+        <button id="tab-ledger" class="tab-btn flex-1 px-4 py-2 text-[11px] tracking-wide text-slate-200 border-b-2 border-emerald-500 bg-slate-800/40 flex items-center justify-center gap-2">
+          <i data-lucide="terminal" class="w-4 h-4"></i>Audit Ledger
+        </button>
+        <button id="tab-api" class="tab-btn flex-1 px-4 py-2 text-[11px] tracking-wide text-slate-400 border-b-2 border-transparent flex items-center justify-center gap-2">
+          <i data-lucide="braces" class="w-4 h-4"></i>OpenAPI Inspector
+        </button>
+      </div>
+
+      <div id="view-ledger" class="flex-1 flex flex-col min-h-[320px]">
+        <div class="flex items-center justify-between px-4 py-1.5 bg-slate-950/40 border-b border-slate-800">
+          <span class="text-[10px] text-slate-500">audit.jsonl · append-only</span>
+          <button id="btn-clear" class="text-[10px] text-slate-400 hover:text-slate-200 flex items-center gap-1">
+            <i data-lucide="trash-2" class="w-3 h-3"></i>Clear
+          </button>
+        </div>
+        <div id="terminal" class="terminal flex-1 p-3 overflow-y-auto text-[10px] leading-relaxed bg-[#020617]">
+          <div class="text-slate-500">[ISIP] audit ledger ready</div>
+        </div>
+      </div>
+
+      <div id="view-api" class="hidden flex-1 flex-col">
+        <div class="px-4 py-1.5 bg-slate-950/40 border-b border-slate-800 text-[10px] text-slate-500">openapi.yaml // ISIP_v0.1.0</div>
+        <div class="flex-1 p-3 overflow-y-auto bg-[#020617] text-[10px]">
+          <pre id="api-spec" class="whitespace-pre text-emerald-300/90 leading-relaxed"></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Active alerts -->
+    <section class="rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden lg:col-span-1 min-h-[360px]">
+      <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800">
+        <span class="text-[11px] tracking-wide text-slate-400 flex items-center gap-2">
+          <i data-lucide="triangle-alert" class="w-4 h-4 text-rose-400"></i>ACTIVE ALERTS
+        </span>
+        <span id="alert-count-pill" class="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">0 active</span>
+      </div>
+      <div id="alert-list" class="flex-1 p-3 space-y-2 overflow-y-auto terminal">
+        <div class="text-slate-600 text-[10px]">No active alerts — site is nominal.</div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= E-STOP BAR ================= -->
+  <footer class="border border-slate-800 rounded-xl bg-slate-900 px-5 py-4 flex flex-wrap items-center gap-4">
+    <button id="btn-estop"
+      class="flex items-center gap-3 px-8 py-4 rounded-full border-4 border-rose-300 bg-gradient-to-b from-rose-500 to-rose-700 text-white font-black tracking-widest text-sm uppercase shadow-lg shadow-rose-900/50 transition hover:brightness-110 active:scale-95">
+      <i data-lucide="octagon-alert" class="w-6 h-6"></i>E-STOP
+    </button>
+    <div>
+      <div id="estop-state" class="text-[11px] text-slate-400 tracking-widest">RELAY ARMED // STANDBY</div>
+      <div class="text-[10px] text-slate-600 mt-0.5">Direct PLC relay · GPIO-17 · watch-dog armed</div>
+    </div>
+    <div class="ml-auto text-right text-[10px] text-slate-500 hidden md:block">
+      <div id="estop-verdict">NO RELAY TRIP</div>
+      <div class="text-slate-600 mt-0.5">Last E-Stop latency: <span id="last-estop-lat">—</span></div>
+    </div>
+  </footer>
+
+  <footer class="flex flex-wrap items-center gap-x-6 gap-y-2 text-[10px] text-slate-600 px-1">
+    <span>ISIP &middot; Neurobots Championship 2026 &middot; MIT License</span>
+    <a class="hover:text-cyan-400 transition" href="https://github.com/Anandhu-96/Agentic_AI" target="_blank" rel="noopener">GitHub</a>
+    <a class="hover:text-cyan-400 transition" href="https://github.com/Anandhu-96/Agentic_AI/blob/main/docs/architecture.md" target="_blank" rel="noopener">Architecture</a>
+    <span class="ml-auto">edge-first · multi-modal · offline-safe · &lt;20ms safety loop</span>
+  </footer>
 </div>
+
+<!-- ================= E-STOP MODAL ================= -->
+<div id="estop-modal" class="hidden fixed inset-0 z-50 items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+  <div class="bg-slate-900 border border-rose-500 rounded-xl max-w-md w-full p-6 shadow-2xl shadow-rose-900/40">
+    <div class="flex items-center gap-3 mb-4">
+      <i data-lucide="octagon-alert" class="w-10 h-10 text-rose-500"></i>
+      <div>
+        <h2 class="font-bold text-white tracking-wide">HARDWARE POWER CUT</h2>
+        <p class="text-[11px] text-slate-400">E-Stop relay phase engaged</p>
+      </div>
+    </div>
+    <div class="rounded border border-slate-800 bg-slate-950 p-3 mb-4 text-[11px] space-y-1">
+      <div class="flex justify-between"><span class="text-slate-500">Execution</span><span class="text-rose-300 font-bold">PLC DIRECT TRIP</span></div>
+      <div class="flex justify-between"><span class="text-slate-500">Latency</span><span id="modal-latency" class="text-emerald-300 font-bold">4.1 ms</span></div>
+      <div class="flex justify-between"><span class="text-slate-500">Relay</span><span class="text-slate-300">GPIO-3 :: Line-01</span></div>
+      <div class="flex justify-between"><span class="text-slate-500">Mode</span><span class="text-rose-300 font-bold">SAFE_STATE / LOCKED</span></div>
+    </div>
+    <div class="flex gap-2">
+      <button id="btn-release" class="flex-1 px-4 py-2.5 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs font-bold hover:bg-emerald-500/20 transition">Release E-Stop</button>
+      <button id="btn-close-modal" class="flex-1 px-4 py-2.5 rounded border border-slate-700 bg-slate-800/60 text-slate-300 text-xs hover:bg-slate-700/60 transition">Dismiss</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   ISIP OPERATOR DASHBOARD
+   - When an edge node is reachable at API_BASE it consumes live data
+     (/metrics, /events, /audit, /stream, /video-feed).
+   - Otherwise it runs a full local simulation so the product demo
+     works identically from static hosting (GitHub Pages).
+   ===================================================================== */
+const API_BASE = 'http://127.0.0.1:8080/edge';
+const ASSETS = 'dashboard/'; // build-time asset prefix ('' or 'dashboard/')
+
+const $ = (id) => document.getElementById(id);
+const now = () => Math.floor(Date.now() / 1000);
+const rnd = (min, max, dp = 1) => (Math.random() * (max - min) + min).toFixed(dp);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+function initIcons() { try { lucide.createIcons(); } catch (e) {} }
+
+/* ================= STATE ================= */
+const state = {
+  mode: 'SIM',                    // LIVE | SIM
+  estop: false,
+  intrusion: false,
+  thermal: false,
+  alerts: 0,
+  startedAt: Date.now(),
+  metrics: { latency_ms: 14.2, fps: 70, uptime_s: 0, inferences: 0, is_estop_locked: false },
+  telemetry: { temp: { v: 68, s: 'NORMAL' }, vib: { v: 40, s: 'NORMAL' }, gas: { v: 7, s: 'NORMAL' } },
+  history: { t: [], v: [], g: [], labels: [] },
+  rul: { health: 100, hours: 100000 },
+  workers: [],                    // {id, x, y, helmet, vest, gloves, missing:[], conf}
+  zones: [
+    { id: 'DANGER_ZONE_A', severity: 'CRITICAL', action: 'TRIP_RELAY', active: false,
+      polygon: [[0.40,0.40],[0.70,0.40],[0.72,0.55],[0.65,0.75],[0.40,0.75]] },
+  ],
+  machine: { id: 'MACHINE-01', x: 0.78, y: 0.30, active: false },
+  alertsList: [],
+};
+
+const MAXPTS = 40;
+
+function seedWorkers() {
+  state.workers = [
+    { id: 'W-1', x: 0.30, y: 0.72, helmet: true,  vest: true,  gloves: false, conf: 0.94 },
+    { id: 'W-2', x: 0.52, y: 0.80, helmet: false, vest: true,  gloves: false, conf: 0.91 },
+    { id: 'W-3', x: 0.75, y: 0.66, helmet: true,  vest: false, gloves: false, conf: 0.88 },
+  ];
+  state.workers.forEach(w => w.missing = missingFor(w));
+}
+function missingFor(w) {
+  const m = [];
+  if (!w.helmet) m.push('helmet');
+  if (!w.vest) m.push('vest');
+  if (!w.gloves) m.push('gloves');
+  return m;
+}
+seedWorkers();
+
+/* ================= STATUS PILL ================= */
+function setOperational(kind, flash) {
+  const pill = $('op-pill'), dot = $('op-dot'), txt = $('op-text');
+  txt.textContent = kind;
+  pill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full border text-[11px] font-bold tracking-wider';
+  dot.className = 'w-2 h-2 rounded-full';
+  if (kind === 'OPERATIONAL') {
+    pill.classList.add('border-emerald-500/40', 'bg-emerald-500/10', 'text-emerald-300');
+    dot.classList.add('bg-emerald-400');
+  } else if (kind === 'ZONE_BREACH' || kind === 'THERMAL_ANOMALY' || kind === 'PPE_VIOLATION') {
+    pill.classList.add('border-rose-500/50', 'bg-rose-500/10', 'text-rose-300');
+    dot.classList.add('bg-rose-400', 'animate-pulse');
+  } else if (kind === 'EMERGENCY_STOP_EXECUTED') {
+    pill.classList.add('border-rose-500', 'bg-rose-600', 'text-white');
+    dot.classList.add('bg-white', 'animate-pulse');
+  }
+  if (flash) pill.classList.add('alert-active'); else pill.classList.remove('alert-active');
+}
+
+/* ================= LOGGING ================= */
+function appendLog(event_type, severity, payload = {}, ts = Date.now() / 1000) {
+  const entry = { timestamp: Math.floor(ts), event_type, severity, payload };
+  const term = $('terminal');
+  const div = document.createElement('div');
+  div.className = severity === 'CRITICAL' ? 'text-rose-400' : severity === 'WARNING' ? 'text-amber-300' : 'text-slate-400';
+  div.textContent = '> ' + JSON.stringify(entry);
+  term.appendChild(div);
+  while (term.children.length > 300) term.removeChild(term.firstChild);
+  term.scrollTop = term.scrollHeight;
+}
+
+function streamEvent(event_type, severity, payload = {}) {
+  const el = $('event-stream');
+  const div = document.createElement('div');
+  div.className = severity === 'CRITICAL' ? 'text-rose-400' : severity === 'WARNING' ? 'text-amber-300' : 'text-slate-400';
+  const t = new Date().toLocaleTimeString('en-GB', { hour12: false, hourCycle: 'h23' });
+  div.textContent = `[${t}] ${event_type} [${severity}] ` + JSON.stringify(payload).slice(0, 140);
+  el.appendChild(div);
+  while (el.children.length > 200) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+
+/* ================= ALERTS ================= */
+function addAlert(id, severity, text) {
+  if (state.alertsList.some(a => a.id === id)) return;
+  state.alertsList.push({ id, severity, text, ts: Date.now() });
+  state.alerts += 1;
+  renderAlerts();
+}
+function clearAlert(id) {
+  state.alertsList = state.alertsList.filter(a => a.id !== id);
+  renderAlerts();
+}
+function renderAlerts() {
+  const list = $('alert-list');
+  const pill = $('alert-count-pill');
+  pill.textContent = state.alertsList.length + ' active';
+  if (!state.alertsList.length) {
+    list.innerHTML = '<div class="text-slate-600 text-[10px]">No active alerts — site is nominal.</div>';
+    return;
+  }
+  list.innerHTML = '';
+  state.alertsList.forEach(a => {
+    const d = document.createElement('div');
+    const color = a.severity === 'CRITICAL' ? 'border-rose-500/40 bg-rose-500/10 text-rose-300' : 'border-amber-500/40 bg-amber-500/10 text-amber-300';
+    d.className = 'rounded border px-3 py-2 text-[10px] ' + color + ' flex items-center gap-2';
+    d.innerHTML = `<i data-lucide="${a.severity === 'CRITICAL' ? 'octagon-alert' : 'triangle-alert'}" class="w-3.5 h-3.5 shrink-0"></i><span>${a.text}</span>`;
+    list.appendChild(d);
+  });
+  initIcons();
+}
+
+/* ================= PPE PANEL ================= */
+function renderPpe() {
+  const list = $('ppe-list');
+  list.innerHTML = '';
+  let compliant = 0;
+  state.workers.forEach(w => {
+    const ok = w.missing.length === 0;
+    if (ok) compliant++;
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-2 rounded border px-2.5 py-1.5 text-[10px] ' +
+      (ok ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-rose-500/40 bg-rose-500/10');
+    const gear = (name, on) => {
+      const c = on ? 'bg-emerald-400' : 'bg-rose-500/70';
+      return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800 text-slate-400"><span class="w-1.5 h-1.5 rounded-full ${c}"></span>${name}</span>`;
+    };
+    row.innerHTML = `
+      <span class="font-bold ${ok ? 'text-emerald-300' : 'text-rose-300'}">${w.id}</span>
+      <span class="text-slate-600">·</span>
+      ${gear('helmet', w.helmet)}${gear('vest', w.vest)}${gear('gloves', w.gloves)}
+      <span class="ml-auto ${ok ? 'text-emerald-400' : 'text-rose-300'}">${ok ? 'SAFE' : 'MISSING ' + w.missing.join(',')}</span>`;
+    list.appendChild(row);
+  });
+  const score = state.workers.length ? Math.round((compliant / state.workers.length) * 100) : 100;
+  const el = $('ppe-score');
+  el.textContent = score + '%';
+  el.className = 'text-xs font-bold ' + (score === 100 ? 'text-emerald-300' : 'text-rose-300');
+  if (state.workers.some(w => w.missing.length)) setOperational('PPE_VIOLATION', true);
+  else if (!state.thermal && !state.intrusion) setOperational('OPERATIONAL', false);
+  $('feed-summary-text').textContent = state.workers.length + ' workers · ' +
+    state.workers.reduce((n, w) => n + (w.missing.length ? 1 : 0), 0) + ' violations';
+}
+
+/* ================= ZONES PANEL ================= */
+function renderZones() {
+  const list = $('zone-list');
+  list.innerHTML = '';
+  state.zones.forEach(z => {
+    const d = document.createElement('div');
+    d.className = 'flex items-center gap-2 rounded border px-2.5 py-1.5 text-[10px] ' +
+      (z.active ? 'border-rose-500/50 bg-rose-500/10' : 'border-slate-800 bg-slate-900');
+    const sev = z.active ? '#f43f5e' : (z.severity === 'CRITICAL' ? '#fb7185' : '#fbbf24');
+    d.innerHTML = `<span class="w-2 h-2 rounded-full shrink-0" style="background:${sev}"></span>
+      <span class="font-bold ${z.active ? 'text-rose-300' : 'text-slate-300'}">${z.id}</span>
+      <span class="text-slate-600">·</span><span class="text-slate-500">${z.severity}</span>
+      <span class="ml-auto ${z.active ? 'text-rose-300 font-bold' : 'text-slate-500'}">${z.active ? 'ACTIVE / BREACH' : 'CLEAR'}</span>`;
+    list.appendChild(d);
+  });
+  const m = state.machine;
+  const md = document.createElement('div');
+  md.className = 'flex items-center gap-2 rounded border px-2.5 py-1.5 text-[10px] ' +
+    (m.active ? 'border-rose-500/50 bg-rose-500/10' : 'border-cyan-500/30 bg-cyan-500/5');
+  md.innerHTML = `<i data-lucide="truck" class="w-3 h-3 ${m.active ? 'text-rose-300' : 'text-cyan-300'}"></i>
+    <span class="font-bold text-slate-300">MACHINE_DANGER_01</span>
+    <span class="ml-auto ${m.active ? 'text-rose-300 font-bold' : 'text-cyan-300'}">${m.active ? 'OCCUPIED' : 'EMPTY'}</span>`;
+  list.appendChild(md);
+  initIcons();
+}
+
+/* ================= KPIs ================= */
+function renderKpis() {
+  $('m-latency').textContent = state.metrics.latency_ms.toFixed(1);
+  $('m-fps').textContent = state.metrics.fps.toFixed(1);
+  $('m-alerts').textContent = state.alerts;
+  $('k-latency').textContent = state.metrics.latency_ms.toFixed(1);
+  $('k-fps').textContent = state.metrics.fps.toFixed(1);
+  $('k-alerts').textContent = state.alerts;
+  $('k-inf').textContent = state.metrics.inferences;
+  $('k-workers').textContent = state.workers.length;
+  $('k-machines').textContent = 1;
+  $('k-uptime').textContent = fmtUptime(state.metrics.uptime_s);
+  const estopEl = $('k-estop');
+  if (state.estop) { estopEl.textContent = 'LOCKED'; estopEl.className = 'text-lg font-bold text-rose-300'; }
+  else { estopEl.textContent = 'ARMED'; estopEl.className = 'text-lg font-bold text-emerald-300'; }
+}
+function fmtUptime(s) {
+  s = Math.floor(s || 0);
+  const h = String(Math.floor(s / 3600)).padStart(2, '0');
+  const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+  const sec = String(s % 60).padStart(2, '0');
+  return h + ':' + m + ':' + sec;
+}
+
+/* ================= TELEMETRY CHART ================= */
+const tLabels = [], tTemps = [], tVibs = [], tGas = [];
+for (let i = 0; i < 30; i++) { tLabels.push('−' + (30 - i) + 's'); tTemps.push(66 + Math.random()); tVibs.push(40 + Math.random() * 6); tGas.push(7 + Math.random() * 2); }
+const chart = new Chart($('telemetry-chart'), {
+  type: 'line',
+  data: {
+    labels: tLabels,
+    datasets: [
+      { label: 'Temp (°C)', data: tTemps, borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.10)', fill: true, tension: 0.4, borderWidth: 2, pointRadius: 0, yAxisID: 'y' },
+      { label: 'Vibration (Hz)', data: tVibs, borderColor: '#22d3ee', backgroundColor: 'rgba(34,211,238,0.08)', fill: true, tension: 0.4, borderWidth: 2, pointRadius: 0, yAxisID: 'y1' },
+      { label: 'CO (ppm)', data: tGas, borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.08)', fill: true, tension: 0.4, borderWidth: 2, pointRadius: 0, yAxisID: 'y2' },
+    ],
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { labels: { color: '#94a3b8', boxWidth: 10, font: { family: 'monospace', size: 9 } } } },
+    scales: {
+      x: { ticks: { color: '#64748b', maxTicksLimit: 6, font: { family: 'monospace', size: 8 } }, grid: { color: 'rgba(148,163,184,0.08)' } },
+      y: { min: 40, max: 105, position: 'left', ticks: { color: '#64748b', font: { family: 'monospace', size: 8 } }, grid: { color: 'rgba(148,163,184,0.08)' } },
+      y1: { min: 20, max: 90, position: 'right', grid: { display: false }, ticks: { color: '#64748b', font: { family: 'monospace', size: 8 } } },
+      y2: { min: 0, max: 30, display: false },
+    },
+  },
+});
+function pushTelemetry(temp, vib, gas) {
+  tLabels.push(new Date().toLocaleTimeString('en-GB', { hour12: false, hourCycle: 'h23' }));
+  tTemps.push(temp); tVibs.push(vib); tGas.push(gas);
+  if (tLabels.length > MAXPTS) { tLabels.shift(); tTemps.shift(); tVibs.shift(); tGas.shift(); }
+  chart.update();
+}
+
+/* ================= RUL GAUGE ================= */
+const rulChart = new Chart($('rul-chart'), {
+  type: 'doughnut',
+  data: { datasets: [{ data: [100, 0], backgroundColor: ['#10b981', '#1e293b'], borderWidth: 0 }] },
+  options: { responsive: true, maintainAspectRatio: false, cutout: '72%', animation: false, plugins: { legend: { display: false } } },
+});
+function renderRul() {
+  const h = clamp(state.rul.health, 0, 100);
+  rulChart.data.datasets[0].data = [h, 100 - h];
+  rulChart.data.datasets[0].backgroundColor[0] = h > 70 ? '#10b981' : h > 40 ? '#f59e0b' : '#ef4444';
+  rulChart.update();
+  $('rul-health').textContent = h.toFixed(1) + '%';
+  $('rul-health').className = 'text-2xl font-black ' + (h > 70 ? 'text-emerald-300' : h > 40 ? 'text-amber-300' : 'text-rose-300');
+  $('rul-hours').textContent = Math.round(state.rul.hours).toLocaleString() + ' h';
+}
+
+/* ================= SENSORS ================= */
+function renderSensors() {
+  const t = state.telemetry.temp, v = state.telemetry.vib, g = state.telemetry.gas;
+  $('sensor-temp-v').textContent = t.v.toFixed(1);
+  $('sensor-temp-s').textContent = t.s;
+  $('sensor-temp-s').className = 'text-[9px] ' + (t.s === 'NORMAL' ? 'text-emerald-400' : t.s === 'WARN' ? 'text-amber-400' : 'text-rose-400');
+  $('sensor-vib-v').textContent = v.v.toFixed(1);
+  $('sensor-vib-s').textContent = v.s;
+  $('sensor-vib-s').className = 'text-[9px] ' + (v.s === 'NORMAL' ? 'text-emerald-400' : 'text-amber-400');
+  $('sensor-gas-v').textContent = g.v.toFixed(1);
+  $('sensor-gas-s').textContent = g.s;
+  $('sensor-gas-s').className = 'text-[9px] ' + (g.s === 'NORMAL' ? 'text-emerald-400' : 'text-amber-400');
+}
+
+/* ================= INTRUSION ================= */
+function setIntrusion(on, opts = {}) {
+  state.intrusion = on;
+  state.zones[0].active = on;
+  $('breach-banner').classList.toggle('hidden', !on);
+  $('breach-banner').classList.toggle('alert-active', on);
+  $('breach-tag').classList.toggle('hidden', !on);
+  $('breach-tag').classList.toggle('flex', on);
+  $('btn-intrusion-text').textContent = on ? 'Clear Intrusion' : 'Trigger Intrusion';
+  renderZones();
+  if (on) {
+    setOperational('ZONE_BREACH', true);
+    addAlert('zone', 'CRITICAL', 'Worker entered DANGER_ZONE_A — relay trip issued.');
+    streamEvent('ZONE_INTRUSION', 'CRITICAL', { zone_id: 'DANGER_ZONE_A', action: 'TRIP_RELAY' });
+    appendLog('ZONE_INTRUSION', 'CRITICAL', { zone_id: 'DANGER_ZONE_A', confidence: 0.94, worker_id: 'W-1' });
+    appendLog('RELAY_TRIP', 'CRITICAL', { target: 'PLC_AUX_2', latency: 4.1 });
+    if (opts.auto) streamEvent('RELAY_TRIP', 'CRITICAL', { target: 'PLC_AUX_2', latency_ms: 4.1 });
+  } else {
+    clearAlert('zone');
+    if (!state.thermal && !state.estop) setOperational('OPERATIONAL', false);
+    streamEvent('ZONE_CLEARED', 'INFO', { zone_id: 'DANGER_ZONE_A' });
+    appendLog('ZONE_CLEARED', 'INFO', { zone_id: 'DANGER_ZONE_A' });
+  }
+}
+
+/* ================= THERMAL SIM ================= */
+function thermalSpike() {
+  if (state.thermal) return;
+  state.thermal = true;
+  $('chart-alarm').classList.remove('hidden');
+  setOperational('THERMAL_ANOMALY', true);
+  addAlert('thermal', 'CRITICAL', 'TMP_BRG_02 exceeded 85°C threshold — thermal anomaly.');
+  streamEvent('THERMAL_ANOMALY', 'CRITICAL', { sensor: 'TMP_BRG_02', temp_c: state.telemetry.temp.v, threshold: 85 });
+  appendLog('THERMAL_ANOMALY', 'CRITICAL', { sensor: 'TMP_BRG_02', temp_c: state.telemetry.temp.v, threshold: 85 });
+  appendLog('RELAY_TRIP', 'CRITICAL', { reason: 'thermal_critical' });
+}
+function thermalClear() {
+  state.thermal = false;
+  $('chart-alarm').classList.add('hidden');
+  clearAlert('thermal');
+  if (!state.intrusion && !state.estop && !state.workers.some(w => w.missing.length)) setOperational('OPERATIONAL', false);
+  streamEvent('THERMAL_COMPLIANT', 'INFO', { sensor: 'TMP_BRG_02', temp_c: state.telemetry.temp.v });
+  appendLog('THERMAL_COMPLIANT', 'INFO', { sensor: 'TMP_BRG_02', temp_c: state.telemetry.temp.v });
+}
+function onSlider() {
+  const v = parseFloat($('temp-slider').value);
+  $('temp-readout').textContent = v.toFixed(1) + ' °C';
+  state.telemetry.temp.v = v;
+  state.telemetry.temp.s = v >= 95 ? 'CRITICAL' : v >= 85 ? 'WARN' : 'NORMAL';
+  if (v > 85 && !state.thermal) thermalSpike();
+  if (v <= 85 && state.thermal) thermalClear();
+  renderSensors();
+}
+
+/* ================= PPE SIM ================= */
+let ppeToggled = false;
+function togglePpe() {
+  ppeToggled = !ppeToggled;
+  const w = state.workers[0]; // W-1
+  w.helmet = !ppeToggled;
+  w.missing = missingFor(w);
+  renderPpe();
+  if (ppeToggled) {
+    streamEvent('PPE_VIOLATION', 'WARNING', { worker: w.id, missing_gear: 'helmet' });
+    appendLog('PPE_VIOLATION', 'WARNING', { worker: w.id, missing_gear: 'helmet' });
+  } else {
+    streamEvent('PPE_COMPLIANT', 'INFO', { worker: w.id, helmet: true, vest: true });
+    appendLog('PPE_COMPLIANT', 'INFO', { worker: w.id, helmet: true, vest: true });
+  }
+}
+
+/* ================= E-STOP ================= */
+function eStop() {
+  if (state.estop) return;
+  state.estop = true;
+  const lat = rnd(3.8, 4.6, 2);
+  $('modal-latency').textContent = lat + ' ms';
+  $('last-estop-lat').textContent = lat + ' ms';
+  $('estop-modal').classList.remove('hidden'); $('estop-modal').classList.add('flex');
+  setOperational('EMERGENCY_STOP_EXECUTED', true);
+  $('estop-state').textContent = '⚠ EMERGENCY STOP EXECUTED // RELAY LOCKED';
+  $('estop-state').className = 'text-[11px] text-rose-400 font-bold tracking-widest alert-active';
+  $('estop-verdict').textContent = 'POWER CUT EXECUTED';
+  addAlert('estop', 'CRITICAL', 'E-Stop triggered — line powered down, relay locked.');
+  streamEvent('E_STOP_TRIGGERED', 'CRITICAL', { relay: 'GPIO-3', mode: 'DIRECT', latency_ms: parseFloat(lat) });
+  appendLog('E_STOP_TRIGGERED', 'CRITICAL', { relay: 'GPIO-3', mode: 'DIRECT', latency_ms: parseFloat(lat) });
+  appendLog('POWER_CUT', 'CRITICAL', { target: 'LINE_01', state: 'OFF', source: 'PLC_RELAY' });
+  appendLog('SYSTEM_SAFE_STATE', 'CRITICAL', { locked: true });
+  renderKpis();
+}
+function releaseEStop() {
+  state.estop = false;
+  $('estop-modal').classList.add('hidden'); $('estop-modal').classList.remove('flex');
+  setOperational('OPERATIONAL', false);
+  $('estop-state').textContent = 'RELAY ARMED // STANDBY';
+  $('estop-state').className = 'text-[11px] text-slate-400 tracking-widest';
+  $('estop-verdict').textContent = 'NO RELAY TRIP';
+  clearAlert('estop');
+  streamEvent('E_STOP_RELEASE', 'INFO', { reason: 'operator_override' });
+  appendLog('E_STOP_RELEASE', 'INFO', { reason: 'operator_override' });
+  renderKpis();
+}
+
+/* ================= VIDEO / CANVAS ================= */
+const cv = $('video-canvas');
+const ctx = cv.getContext('2d');
+function resizeCanvas() {
+  const wrap = $('video-wrap');
+  cv.width = wrap.clientWidth || 640;
+  cv.height = wrap.clientHeight || 360;
+}
+window.addEventListener('resize', resizeCanvas);
+
+function drawFrame() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const SX = cv.width, SY = cv.height;
+
+  // Static + machine zones
+  state.zones.forEach(z => {
+    const pts = z.polygon.map(([nx, ny]) => [nx * SX, ny * SY]);
+    const color = z.active ? '#f43f5e' : z.severity === 'CRITICAL' ? '#fb7185' : '#fbbf24';
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+    ctx.globalAlpha = z.active ? 0.30 : 0.12; ctx.fillStyle = color; ctx.fill();
+    ctx.globalAlpha = 1; ctx.lineWidth = z.active ? 3 : 2; ctx.strokeStyle = color; ctx.stroke();
+    pts.forEach(([px, py]) => { ctx.beginPath(); ctx.arc(px, py, z.active ? 4 : 3, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); });
+    const lx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+    const ly = Math.min(...pts.map(p => p[1])) - 8;
+    label(lx, ly, (z.active ? '⚠ ' : '') + z.id, color);
+  });
+
+  // Machine danger zone
+  const m = state.machine;
+  const mx = m.x * SX, my = m.y * SY;
+  const mw = 0.20 * SX, mh = 0.26 * SY;
+  const danger = [[mx - mw * 0.7, my - mh * 0.7], [mx + mw * 0.7, my - mh * 0.7], [mx + mw * 0.7, my + mh * 0.7], [mx - mw * 0.7, my + mh * 0.7]];
+  ctx.beginPath(); ctx.moveTo(danger[0][0], danger[0][1]);
+  for (let i = 1; i < danger.length; i++) ctx.lineTo(danger[i][0], danger[i][1]);
+  ctx.closePath();
+  ctx.globalAlpha = 0.18; ctx.fillStyle = '#22d3ee'; ctx.fill();
+  ctx.globalAlpha = 1; ctx.lineWidth = 2; ctx.strokeStyle = '#22d3ee'; ctx.stroke();
+  label(mx, my - mh * 0.7 - 8, 'MACHINE_DANGER_01', '#22d3ee');
+  ctx.fillStyle = '#22d3ee'; ctx.fillRect(mx - mw / 2, my - mh / 2, mw, mh);
+
+  // Workers
+  state.workers.forEach(w => {
+    const x = w.x * SX, y = w.y * SY, bh = 0.15 * SY, bw = 0.085 * SX;
+    const color = w.missing.length ? '#ef4444' : '#10b981';
+    ctx.beginPath(); ctx.arc(x, y - bh, bw * 0.32, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
+    ctx.fillStyle = color; ctx.globalAlpha = 0.85; ctx.fillRect(x - bw / 2, y - bh, bw, bh); ctx.globalAlpha = 1;
+    if (w.helmet) { ctx.fillStyle = '#22d3ee'; ctx.fillRect(x - bw * 0.4, y - bh - 4, bw * 0.8, 4); }
+    if (w.vest) { ctx.fillStyle = '#e879f9'; ctx.fillRect(x - bw * 0.45, y - bh * 0.75, bw * 0.9, bh * 0.4); }
+    const txt = w.missing.length ? `${w.id} MISSING ${w.missing.join(',')}` : `${w.id} SAFE`;
+    label(x, y - bh - 8, txt, color);
+  });
+
+  requestAnimationFrame(drawFrame);
+}
+function label(cx, cy, text, color) {
+  ctx.font = 'bold 10px monospace';
+  const tw = ctx.measureText(text).width + 8;
+  const y = Math.max(12, cy - 12);
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.fillRect(cx - tw / 2, y, tw, 14);
+  ctx.fillStyle = color;
+  ctx.fillText(text, cx - tw / 2 + 4, y + 11);
+}
+
+/* ================= SIMULATION ENGINE ================= */
+let simTick = 0;
+function simLoop() {
+  simTick++;
+  const s = state.metrics;
+  s.uptime_s = (Date.now() - state.startedAt) / 1000;
+  s.latency_ms = 13 + Math.random() * 3;
+  s.fps = 66 + Math.random() * 8;
+  s.inferences += Math.floor(1 + Math.random() * 3);
+
+  // Telemetry with drift + slow RUL decay
+  const t = state.telemetry;
+  t.temp.v = clamp(t.temp.v + (Math.random() * 1.6 - 0.8), 55, 100);
+  t.vib.v = clamp(t.vib.v + (Math.random() * 3 - 1.5), 30, 80);
+  t.gas.v = clamp(t.gas.v + (Math.random() * 1.2 - 0.6), 4, 25);
+  t.temp.s = t.temp.v >= 95 ? 'CRITICAL' : t.temp.v >= 85 ? 'WARN' : 'NORMAL';
+  t.vib.s = t.vib.v >= 70 ? 'WARN' : 'NORMAL';
+  t.gas.s = t.gas.v >= 25 ? 'WARN' : 'NORMAL';
+  state.rul.health = Math.max(0, state.rul.health - 0.0004);
+  state.rul.hours = Math.max(0, state.rul.hours - 0.4);
+
+  // occasional auto thermal anomaly
+  if (!state.thermal && simTick % 45 === 0 && Math.random() < 0.6) {
+    $('temp-slider').value = 92; $('temp-readout').textContent = '92.0 °C';
+    state.telemetry.temp.v = 92; state.telemetry.temp.s = 'WARN';
+    thermalSpike();
+  }
+  if (state.thermal && simTick % 40 === 0 && Math.random() < 0.5) {
+    $('temp-slider').value = 68; $('temp-readout').textContent = '68.0 °C';
+    state.telemetry.temp.v = 68; state.telemetry.temp.s = 'NORMAL';
+    thermalClear();
+  }
+
+  // occasional auto intrusion to keep the demo alive
+  if (!state.intrusion && simTick % 35 === 0 && Math.random() < 0.7) setIntrusion(true, { auto: true });
+  if (state.intrusion && simTick % 30 === 0 && Math.random() < 0.6) setIntrusion(false);
+
+  // drift workers / machine
+  const w1 = state.workers[0];
+  w1.x = 0.30 + 0.04 * Math.sin(simTick / 30);
+  w1.y = 0.72 + 0.02 * Math.cos(simTick / 25);
+  state.workers[1].x = 0.52 + 0.05 * Math.sin(simTick / 35);
+  state.workers[2].x = 0.75 + 0.04 * Math.cos(simTick / 28);
+  state.machine.x = 0.78 + 0.10 * Math.sin(simTick / 40);
+
+  renderAll();
+}
+
+function renderAll() {
+  renderKpis();
+  renderSensors();
+  renderRul();
+  pushTelemetry(state.telemetry.temp.v, state.telemetry.vib.v, state.telemetry.gas.v);
+  $('feed-clock').textContent = new Date().toTimeString().slice(0, 8);
+}
+
+/* ================= LIVE BACKEND ================= */
+let es = null;
+function stopLive() {
+  if (es) { try { es.close(); } catch (e) {} es = null; }
+}
+
+function startLive() {
+  state.mode = 'LIVE';
+  $('backend-text').textContent = 'BACKEND: ONLINE';
+  $('backend-pill').className = 'flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-[11px] text-emerald-300';
+  $('edge-text').textContent = 'EDGE INFERENCE ACTIVE';
+  $('video-handle').textContent = 'LIVE FEED // CAM-01';
+  const vf = $('video-feed');
+  if (vf) { vf.onerror = feedFallback; vf.src = API_BASE + '/video-feed'; }
+
+  // SSE event stream
+  try {
+    es = new EventSource(API_BASE + '/stream');
+    es.onmessage = (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        const sev = d.severity || 'INFO';
+        streamEvent(d.event_type || 'EVENT', sev, d.payload || {});
+        ingestEvent(d);
+      } catch (err) {}
+    };
+    es.onerror = () => streamEvent('SSE', 'WARNING', { note: 'reconnecting…' });
+  } catch (err) {}
+
+  setInterval(async () => {
+    try {
+      const r = await fetch(API_BASE + '/metrics');
+      const m = await r.json();
+      state.metrics.latency_ms = m.latency_ms;
+      state.metrics.fps = m.fps;
+      state.metrics.alerts = m.alerts;
+      state.metrics.uptime_s = m.uptime_s;
+      state.metrics.inferences = m.inferences;
+      state.estop = !!m.is_estop_locked;
+      if (m.is_estop_locked) { $('estop-state').textContent = '⚠ RELAY LOCKED'; $('estop-verdict').textContent = 'POWER CUT EXECUTED'; }
+      renderKpis();
+    } catch (err) {}
+  }, 2000);
+
+  setInterval(fetchEvents, 2000);
+  setInterval(fetchAudit, 4000);
+}
+
+async function fetchEvents() {
+  try {
+    const r = await fetch(API_BASE + '/events?limit=100');
+    const evs = await r.json();
+    evs.forEach(ingestEvent);
+    const tel = evs.filter(e => e.event_type === 'TELEMETRY' && e.payload);
+    if (tel.length) {
+      const last = tel[tel.length - 1].payload;
+      if (last.sensor_id === 'TMP_BRG_02') { state.telemetry.temp.v = last.value; state.telemetry.temp.s = last.status; }
+      else if (last.sensor_id === 'VIB_MTR_01') { state.telemetry.vib.v = last.value; state.telemetry.vib.s = last.status; }
+      else if (last.sensor_id === 'GAS_CO_03') { state.telemetry.gas.v = last.value; state.telemetry.gas.s = last.status; }
+      renderAll();
+    }
+    const rul = evs.filter(e => e.event_type === 'RUL_UPDATE' && e.payload);
+    if (rul.length) {
+      const r = rul[rul.length - 1].payload;
+      state.rul.health = r.health_pct != null ? r.health_pct : state.rul.health;
+      state.rul.hours = r.remaining_hours != null ? r.remaining_hours : state.rul.hours;
+      renderRul();
+    }
+  } catch (err) {}
+}
+
+function ingestEvent(ev) {
+  const t = ev.event_type;
+  const sev = ev.severity || 'INFO';
+  if (t === 'PPE_VIOLATION' && ev.payload) {
+    addAlert('ppe-' + (ev.payload.worker || '?'), 'WARNING', `Worker ${ev.payload.worker} missing ${ev.payload.missing_gear}.`);
+  } else if (t === 'ZONE_INTRUSION') {
+    setIntrusion(true, { auto: true });
+  } else if (t === 'ZONE_CLEARED') {
+    setIntrusion(false);
+  } else if (t === 'THERMAL_ANOMALY' || t === 'VIBRATION_ANOMALY' || t === 'GAS_ANOMALY') {
+    state.thermal = true;
+    $('chart-alarm').classList.remove('hidden');
+    addAlert('live-anomaly', 'CRITICAL', (ev.payload || {}).message || t);
+  } else if (t === 'ANOMALY_CLEARED') {
+    state.thermal = false;
+    $('chart-alarm').classList.add('hidden');
+    clearAlert('live-anomaly');
+  } else if (t === 'E_STOP_TRIGGERED') {
+    state.estop = true;
+    addAlert('estop', 'CRITICAL', 'E-Stop triggered — relay locked.');
+  } else if (t === 'E_STOP_RELEASE') {
+    state.estop = false;
+    clearAlert('estop');
+  } else if (t === 'HEARTBEAT' || t === 'INFERENCE_OK') {
+    return; // too chatty for the stream panel
+  }
+  void sev;
+}
+
+async function fetchAudit() {
+  try {
+    const r = await fetch(API_BASE + '/audit?limit=20');
+    const rows = await r.json();
+    rows.slice(0, 12).reverse().forEach(row => {
+      appendLog(row.event_type, row.severity, row.payload || {}, row.timestamp);
+    });
+  } catch (err) {}
+}
+
+/* ================= VIDEO FEED FALLBACK ================= */
+function feedFallback() {
+  const img = $('video-feed');
+  if (!img) return;
+  img.onerror = null;
+  img.src = ASSETS + 'detection_output.jpg';
+  $('video-handle').textContent = 'STATIC PREVIEW // ISIP';
+}
+
+/* ================= BACKEND DETECTION ================= */
+let backendOnline = false;
+async function probeBackend() {
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 3000);
+    const r = await fetch(API_BASE + '/metrics', { signal: ctrl.signal });
+    clearTimeout(to);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const m = await r.json();
+    backendOnline = true;
+    state.metrics.latency_ms = m.latency_ms || 14.2;
+    state.metrics.fps = m.fps || 70;
+    state.metrics.alerts = m.alerts || 0;
+    state.metrics.inferences = m.inferences || 0;
+    state.estop = !!m.is_estop_locked;
+    $('sim-notice').classList.add('hidden');
+    $('sim-notice').classList.remove('flex');
+    startLive();
+  } catch (err) {
+    backendOnline = false;
+    $('backend-text').textContent = 'BACKEND: OFFLINE (SIM)';
+    $('backend-pill').className = 'flex items-center gap-2 px-3 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-[11px] text-amber-300';
+    $('edge-text').textContent = 'SIMULATED INFERENCE';
+    $('video-handle').textContent = 'SIMULATED FEED // CAM-01';
+    $('sim-notice').classList.remove('hidden');
+    $('sim-notice').classList.add('flex');
+    const img = $('video-feed');
+    if (img) { img.onerror = null; img.src = ASSETS + 'detection_output.jpg'; }
+    setInterval(simLoop, 1000);
+    // ambient event chatter
+    setInterval(() => {
+      if (state.estop) return;
+      const r = Math.random();
+      if (r < 0.3) streamEvent('INFERENCE_OK', 'INFO', { cam: 'CAM-01', detections: state.workers.length });
+      else if (r < 0.5) streamEvent('HEARTBEAT', 'INFO', { uptime_s: Math.round(state.metrics.uptime_s), edge_ok: true });
+      else if (r < 0.7) streamEvent('PPE_COMPLIANT', 'INFO', { worker: state.workers[0].id, helmet: true, vest: true });
+    }, 2500);
+  }
+}
+
+/* ================= API SPEC ================= */
+const API_SPEC =
+`openapi: 3.0.1
+info:
+  title: Industrial Safety Intelligence Platform
+  version: '0.1.0'
+  x-edge-node: "Edge Node 01"
+servers:
+  - url: "http://127.0.0.1:8080/edge"
+paths:
+  /health:
+    get:
+      summary: Edge inference + watchdog status
+      responses: { '200': { description: OK } }
+  /metrics:
+    get:
+      summary: latency_ms, fps, alerts, is_estop_locked, uptime_s
+      responses: { '200': { description: telemetry snapshot } }
+  /events:
+    get:
+      summary: Recent broker events (inference, telemetry, safety)
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+      responses: { '200': { description: event list } }
+  /audit:
+    get:
+      summary: Recent audit ledger rows (JSONL)
+      responses: { '200': { description: audit rows } }
+  /config:
+    get:
+      summary: Loaded edge configuration (secrets scrubbed)
+      responses: { '200': { description: config } }
+  /trigger-estop:
+    post:
+      summary: Trigger hardware emergency stop (HARD|SOFT)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode: { type: string, enum: [HARD, SOFT] }
+      responses:
+        '200': { description: relay tripped, latency_ms returned }
+  /release-estop:
+    post:
+      summary: Release a locked E-Stop relay
+      responses: { '200': { description: relay released } }
+  /stream:
+    get:
+      summary: Server-Sent Events stream (live safety events)
+      responses: { '200': { description: text/event-stream } }
+  /video-feed:
+    get:
+      summary: MJPEG live detection feed
+      responses: { '200': { description: multipart/x-mixed-replace } }
+components:
+  schemas:
+    Event:
+      type: object
+      required: [timestamp, event_type, severity, latency_ms]
+      properties:
+        timestamp: { type: integer, format: int64 }
+        event_type: { type: string }
+        severity: { type: string, enum: [INFO, WARNING, CRITICAL] }
+        latency_ms: { type: number }
+        payload: { type: object }`;
+$('api-spec').textContent = API_SPEC;
+
+/* ================= TABS & WIRING ================= */
+function tabBtn(on, off) {
+  on.className = 'tab-btn flex-1 px-4 py-2 text-[11px] tracking-wide text-slate-200 border-b-2 border-emerald-500 bg-slate-800/40 flex items-center justify-center gap-2';
+  off.className = 'tab-btn flex-1 px-4 py-2 text-[11px] tracking-wide text-slate-400 border-b-2 border-transparent flex items-center justify-center gap-2';
+  initIcons();
+}
+$('tab-ledger').addEventListener('click', () => {
+  $('view-ledger').classList.remove('hidden'); $('view-ledger').classList.add('flex');
+  $('view-api').classList.add('hidden'); $('view-api').classList.remove('flex');
+  tabBtn($('tab-ledger'), $('tab-api'));
+});
+$('tab-api').addEventListener('click', () => {
+  $('view-api').classList.remove('hidden'); $('view-api').classList.add('flex');
+  $('view-ledger').classList.add('hidden'); $('view-ledger').classList.remove('flex');
+  tabBtn($('tab-api'), $('tab-ledger'));
+});
+$('btn-intrusion').addEventListener('click', () => setIntrusion(!state.intrusion, { auto: false }));
+$('btn-ppe').addEventListener('click', togglePpe);
+$('btn-clear').addEventListener('click', () => {
+  $('terminal').innerHTML = '<div class="text-slate-500">[ISIP] ledger cleared</div>';
+});
+$('temp-slider').addEventListener('input', onSlider);
+$('btn-estop').addEventListener('click', eStop);
+$('btn-release').addEventListener('click', releaseEStop);
+$('btn-close-modal').addEventListener('click', () => {
+  $('estop-modal').classList.add('hidden'); $('estop-modal').classList.remove('flex');
+});
+$('btn-dismiss-sim').addEventListener('click', () => {
+  $('sim-notice').classList.add('hidden'); $('sim-notice').classList.remove('flex');
+});
+
+/* ================= BOOT ================= */
+resizeCanvas();
+requestAnimationFrame(drawFrame);
+initIcons();
+renderKpis();
+renderPpe();
+renderZones();
+renderSensors();
+renderRul();
+renderAlerts();
+probeBackend();
+</script>
 </body>
 </html>

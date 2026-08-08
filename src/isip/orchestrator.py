@@ -172,7 +172,7 @@ class EdgeOrchestrator:
                             event_type=EventType.INFERENCE_OK,
                             severity=Severity.INFO,
                             latency_ms=elapsed_ms,
-                            detections=[d.__dict__ for d in detections[:8]],
+                            detections=[d.to_event_dict() for d in detections[:8]],
                             fps=self.runtime.metrics.last_fps,
                         )
                     )

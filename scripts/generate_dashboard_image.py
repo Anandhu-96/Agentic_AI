@@ -20,6 +20,9 @@ from isip.vision.tracking import MachineTracker, WorkerTracker
 from isip.vision.zones import DynamicZoneEngine
 
 settings = Settings.from_yaml("config/config.yaml")
+# The still image must be deterministic: force the synthetic demo world so the
+# annotated frame shows workers, machines and zones every run.
+settings.vision.backend = "synthetic"
 detector = build_detector(settings.vision)
 
 # Generate synthetic frame

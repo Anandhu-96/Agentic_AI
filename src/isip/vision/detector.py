@@ -138,6 +138,20 @@ class Detection:
         h = max(self.frame_height, 1)
         return (self.x1 / w, self.y1 / h, self.x2 / w, self.y2 / h)
 
+    def to_event_dict(self) -> dict:
+        """JSON-safe representation for broker/API events (no numpy arrays)."""
+        return {
+            "class_name": self.class_name,
+            "confidence": self.confidence,
+            "x1": self.x1,
+            "y1": self.y1,
+            "x2": self.x2,
+            "y2": self.y2,
+            "bbox_center": list(self.bbox_center),
+            "has_mask": self.mask is not None,
+            "has_polygon": self.polygon is not None,
+        }
+
     @property
     def is_machine(self) -> bool:
         return self.class_name == "machine"

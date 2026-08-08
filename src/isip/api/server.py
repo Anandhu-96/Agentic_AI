@@ -162,6 +162,7 @@ def create_app(runtime: EdgeRuntime) -> FastAPI:
                 for x, y in z["polygon"]
             ]
             z["active"] = name in active
+            z["dynamic"] = True
             overlay[name] = z
         return {"zones": overlay}
 

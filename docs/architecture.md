@@ -46,15 +46,24 @@ loop, entirely offline.
 
 ## Data flow (safety loop)
 
-1. Frame → YOLOv8 detections (persons, PPE items) with per-frame latency.
-2. Worker centroids tested against polygon geofences
-   (`src/isip/vision/geofence.py`).
-3. PPE compliance evaluated per worker (`src/isip/vision/ppe.py`).
-4. Telemetry samples (`src/isip/iiot/telemetry.py`) checked by
-   `src/isip/iiot/anomaly.py`; temperature drives `src/isip/iiot/rul.py`.
-5. Violations and trips are published on the async broker
+1. Frame → detector (YOLOv8 / YOLO-World / YOLO-Seg, or synthetic demo)
+   returns `Detection`s with optional segmentation masks/polygons.
+2. Workers are tracked (`vision/tracking.py`) and their feet position
+   (`Detection.norm_feet_position`, or the segmentation polygon's bottom point)
+   is tested against polygon geofences (`vision/geofence.py`).
+3. Machine detections are tracked with stable IDs (`vision/tracking.py`) and
+   turned into **dynamic** danger zones (`vision/zones.py`) that move with the
+   machine and smooth over time.
+4. Static geofences (`config/geofences.yaml`) plus dynamic machine zones are
+   evaluated for worker presence; PPE compliance is checked per worker
+   (`vision/ppe.py`).
+5. Rendering (`vision/renderer.py`) draws person polygons when segmentation is
+   available, machine bboxes, static zones and machine danger zones through one
+   shared code path used by the video streams, dashboard snapshots, and legacy
+   pipeline.
+6. Violations and trips are published on the async broker
    (`src/isip/events/broker.py`).
-6. The control plane (`src/isip/api/server.py`) trips the PLC relay
+7. The control plane (`src/isip/api/server.py`) trips the PLC relay
    (`src/isip/control/plc.py`) and the audit logger
    (`src/isip/control/audit.py`) appends the JSONL ledger.
 

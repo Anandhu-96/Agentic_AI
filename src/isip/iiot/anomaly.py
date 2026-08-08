@@ -7,12 +7,15 @@ fixed threshold would miss.
 
 from __future__ import annotations
 
+import logging
 import statistics
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, Optional
 
 from ..config import ThresholdConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

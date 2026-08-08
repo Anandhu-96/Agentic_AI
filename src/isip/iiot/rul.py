@@ -7,10 +7,13 @@ tracks toward a rated lifetime so maintenance can be scheduled before failure.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 
 from ..config import RulConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Tuple
 
 from ..config import VisionConfig
 from .detector import Detection
+
+logger = logging.getLogger(__name__)
 
 
 def _iou(a: Detection, b: Detection) -> float:
@@ -50,4 +53,6 @@ def evaluate_ppe(
                 present.add(det.class_name)
         for gear in sorted(required - present):
             violations.append((label, gear, worker.confidence))
+    if violations:
+        logger.debug("ppe violations detected workers=%d violations=%d", len(workers), len(violations))
     return violations

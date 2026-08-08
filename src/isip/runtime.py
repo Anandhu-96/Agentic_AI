@@ -1,9 +1,30 @@
-"""Shared edge runtime state wiring broker, control plane, and audit together."""
+"""Shared edge runtime state wiring broker, control plane, and audit together.
+
+PRODUCTION NOTES
+-----------------
+- RuntimeMetrics is written from two contexts: FastAPI's asyncio event loop
+  (e.g. trigger_estop) and the VideoStreamProducer background thread. A plain
+  ``asyncio.Lock`` only protects against concurrent *coroutines* on the same
+  event loop -- it does nothing for a real OS thread, and using it from a
+  thread with no running loop will raise. This version uses a
+  ``threading.Lock`` for the actual critical section (cheap, non-blocking for
+  the small dict updates here) and exposes both a sync ``snapshot_sync()`` and
+  an async ``snapshot()`` wrapper so both call sites stay correct.
+- VideoStreamProducer now takes the shared RuntimeMetrics instance and
+  actually updates latency/fps/inference_count after each inference --
+  previously these fields were computed locally and only used for the
+  on-frame text overlay, so `/metrics` and the dashboard KPIs never reflected
+  real numbers.
+- The camera capture is released on stop/exit, loop errors are logged instead
+  of swallowed, and a stalled/errored thread is surfaced via `.error` so the
+  API layer (and a future liveness probe) can detect it instead of quietly
+  serving a frozen feed.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import io
+import logging
 import queue
 import threading
 import time
@@ -21,6 +42,8 @@ from .vision.detector import build_detector
 from .vision.geofence import GeofenceEngine
 from .vision.ppe import evaluate_ppe
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class RuntimeMetrics:
@@ -30,10 +53,24 @@ class RuntimeMetrics:
     inference_count: int = 0
     started_at: float = field(default_factory=time.time)
     is_estop_locked: bool = False
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # threading.Lock, not asyncio.Lock: this object is written from a
+    # background OS thread (VideoStreamProducer) as well as from asyncio
+    # coroutines, and asyncio.Lock is not valid across that boundary.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    async def snapshot(self) -> dict:
-        async with self.lock:
+    @property
+    def lock(self) -> threading.Lock:
+        """Kept as `.lock` for call-site compatibility; use `with metrics.lock:`."""
+        return self._lock
+
+    def record_inference(self, latency_ms: float, fps: float) -> None:
+        with self._lock:
+            self.last_latency_ms = latency_ms
+            self.last_fps = fps
+            self.inference_count += 1
+
+    def snapshot_sync(self) -> dict:
+        with self._lock:
             return {
                 "node_id": "",
                 "uptime_s": round(time.time() - self.started_at, 1),
@@ -44,14 +81,21 @@ class RuntimeMetrics:
                 "is_estop_locked": self.is_estop_locked,
             }
 
+    async def snapshot(self) -> dict:
+        # threading.Lock critical section here is tiny (dict construction),
+        # so taking it synchronously inside a coroutine is fine and avoids
+        # the asyncio/threading lock mismatch entirely.
+        return self.snapshot_sync()
+
 
 class VideoStreamProducer:
     """Background thread that continuously produces MJPEG frames."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, metrics: Optional[RuntimeMetrics] = None) -> None:
         self.settings = settings
         self.vision_cfg = settings.vision
         self.video_cfg = settings.video
+        self.metrics = metrics
         self.detector = build_detector(self.vision_cfg)
         self.geofences = GeofenceEngine.from_yaml(self.vision_cfg.geofences_file)
         self._queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=20)
@@ -63,18 +107,26 @@ class VideoStreamProducer:
     def error(self) -> Optional[Exception]:
         return self._error
 
+    @property
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
     def start(self) -> None:
         if self._running:
+            logger.debug("video stream already running")
             return
         self._running = True
         self._error = None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        logger.info("video stream producer started target_fps=%d", self.settings.edge.fps_limit)
 
     def stop(self) -> None:
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                logger.warning("Video producer thread did not stop within timeout")
 
     def get_frame(self, timeout: float = 1.0) -> Optional[bytes]:
         try:
@@ -83,17 +135,23 @@ class VideoStreamProducer:
             return None
 
     def _run(self) -> None:
+        cap = None
         try:
-            cap = None
             if not self.video_cfg.synthetic_camera:
                 cap = cv2.VideoCapture(self.video_cfg.source)
                 if not cap.isOpened():
+                    logger.error(
+                        "Could not open video source %r; falling back to synthetic frames",
+                        self.video_cfg.source,
+                    )
                     cap = None
 
             target_fps = max(1, int(getattr(self.settings.edge, "fps_limit", 4)))
             interval = 1.0 / target_fps
             last_inference = 0.0
             inference_interval = 1.0 / max(1, target_fps - 1)
+            elapsed_ms = 0.0
+            consecutive_errors = 0
 
             while self._running:
                 try:
@@ -114,6 +172,9 @@ class VideoStreamProducer:
                         started = time.perf_counter()
                         detections = self.detector.detect(frame)
                         elapsed_ms = (time.perf_counter() - started) * 1000.0
+                        current_fps = 1000.0 / elapsed_ms if elapsed_ms > 0 else 0.0
+                        if self.metrics is not None:
+                            self.metrics.record_inference(elapsed_ms, current_fps)
 
                         workers = [d for d in detections if d.class_name == "person"]
                         violations = evaluate_ppe(workers, detections, self.vision_cfg)
@@ -127,6 +188,8 @@ class VideoStreamProducer:
                                 active_zones.add(zone.name)
                         for zone in self.geofences.zones.values():
                             pts = np.array(zone.polygon, dtype=np.float32)
+                            centroid = pts.mean(axis=0)
+                            pts = centroid + (pts - centroid) * 0.5
                             pts[:, 0] *= w
                             pts[:, 1] *= h
                             pts = pts.astype(int)
@@ -181,12 +244,29 @@ class VideoStreamProducer:
                             except queue.Empty:
                                 pass
 
+                    consecutive_errors = 0
                     elapsed = time.perf_counter() - frame_start
                     time.sleep(max(0.0, interval - elapsed))
-                except Exception as exc:
+                except Exception:
+                    consecutive_errors += 1
+                    logger.exception(
+                        "Error in video producer frame loop (consecutive=%d)", consecutive_errors
+                    )
+                    if consecutive_errors >= 20:
+                        logger.critical(
+                            "Video producer failing repeatedly (%d consecutive errors); "
+                            "stopping thread rather than spinning silently.",
+                            consecutive_errors,
+                        )
+                        raise
                     time.sleep(0.1)
         except Exception as exc:
             self._error = exc
+            logger.exception("Video producer thread exiting due to unrecoverable error")
+        finally:
+            if cap is not None:
+                cap.release()
+                logger.info("Released video capture device")
 
 
 class EdgeRuntime:
@@ -207,4 +287,9 @@ class EdgeRuntime:
             use_gpio=settings.control.use_gpio,
             trip_delay_ms=settings.control.trip_delay_ms,
         )
-        self.video_stream = VideoStreamProducer(settings)
+        self.video_stream = VideoStreamProducer(settings, metrics=self.metrics)
+
+    def shutdown(self) -> None:
+        """Best-effort graceful shutdown; call from a FastAPI shutdown event."""
+        logger.info("EdgeRuntime shutting down")
+        self.video_stream.stop()

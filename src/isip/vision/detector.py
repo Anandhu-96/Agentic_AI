@@ -159,6 +159,7 @@ class SyntheticDetector(ObjectDetector):
         detections.append(Detection("vest", 0.89, cx1 + w * 0.003, cy1 + h * 0.02, cx2 - w * 0.003, cy1 + h * 0.10))
 
         self._last_latency = (time.perf_counter() - started) * 1000.0
+        logger.debug("synthetic detections=%d persons=%d latency=%.1fms", len(detections), len([d for d in detections if d.class_name == "person"]), self._last_latency)
         return detections
 
     @property
@@ -175,9 +176,12 @@ def build_detector(config: VisionConfig) -> ObjectDetector:
     backend = (config.backend or "yolov8").lower()
     if config.model and backend == "yolov8":
         try:
-            return YoloDetector(config)
+            detector = YoloDetector(config)
+            logger.info("YOLO detector initialized model=%s device=%s", config.model, config.device)
+            return detector
         except ImportError as exc:
             logger.warning("Ultralytics unavailable (%s) - using synthetic detector", exc)
         except Exception as exc:  # model download / torch init failure
             logger.warning("YOLOv8 init failed (%s) - using synthetic detector", exc)
+    logger.info("using synthetic detector backend=%s", backend)
     return SyntheticDetector(config)

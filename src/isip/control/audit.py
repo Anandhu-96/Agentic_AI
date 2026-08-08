@@ -33,8 +33,11 @@ class AuditLogger:
         row = entry.model_dump()
         with self._lock:
             self._ring.append(row)
-            with self._path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(row, default=str) + "\n")
+            try:
+                with self._path.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(row, default=str) + "\n")
+            except OSError as exc:
+                logger.error("failed to write audit entry to %s: %s", self._path, exc)
 
     def latest(self, limit: int = 100) -> List[Dict]:
         with self._lock:

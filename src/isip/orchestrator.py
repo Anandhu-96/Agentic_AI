@@ -120,7 +120,7 @@ class EdgeOrchestrator:
                 await self._check_geofences(workers)
                 await self._check_ppe(workers, detections)
 
-                async with self.runtime.metrics.lock:
+                with self.runtime.metrics.lock:
                     self.runtime.metrics.last_latency_ms = elapsed_ms
                     actual_fps = 1000.0 / max(elapsed_ms, 1.0)
                     self.runtime.metrics.last_fps = min(actual_fps, float(self.settings.edge.fps_limit))
@@ -142,6 +142,8 @@ class EdgeOrchestrator:
                 await asyncio.sleep(0.1)
                 continue
             await asyncio.sleep(max(0.0, interval - elapsed_ms / 1000.0))
+
+        logger.debug("inference loop stopped")
 
     async def _check_geofences(self, workers: List[Detection]) -> None:
         seen: Set[str] = set()
@@ -165,6 +167,13 @@ class EdgeOrchestrator:
             )
             await self.runtime.broker.publish(event)
             self._audit(event)
+            logger.warning(
+                "zone intrusion zone=%s severity=%s worker=%s confidence=%.2f",
+                zone.name,
+                severity.value,
+                f"W-{int(cx * 1000)}",
+                worker.confidence,
+            )
             if zone.action == "TRIP_RELAY":
                 await self._trip_relay(reason=f"zone_intrusion:{zone.name}")
 
@@ -177,6 +186,7 @@ class EdgeOrchestrator:
             )
             await self.runtime.broker.publish(event)
             self._audit(event)
+            logger.info("zone cleared zone=%s", cleared)
 
     async def _check_ppe(self, workers: List[Detection], all_dets: List[Detection]) -> None:
         violations = evaluate_ppe(workers, all_dets, self.settings.vision)
@@ -197,13 +207,21 @@ class EdgeOrchestrator:
             )
             await self.runtime.broker.publish(event)
             self._audit(event)
+            logger.warning(
+                "ppe violation worker=%s missing=%s severity=%s confidence=%.2f",
+                label,
+                gear,
+                event.severity.value,
+                conf,
+            )
         self._active_ppe = active
 
     async def _trip_relay(self, reason: str) -> None:
         if self.runtime.plc.is_locked:
+            logger.debug("relay already locked, skipping trip reason=%s", reason)
             return
         latency_ms = await self.runtime.plc.trip("HARD")
-        async with self.runtime.metrics.lock:
+        with self.runtime.metrics.lock:
             self.runtime.metrics.is_estop_locked = True
             self.runtime.metrics.alert_count += 1
         event = SafetyEvent(
@@ -219,9 +237,12 @@ class EdgeOrchestrator:
     # ----------------------------------------------------------------- iiot
 
     async def _telemetry_loop(self) -> None:
+        logger.info("telemetry loop started sensors=%s", self.settings.iiot.sensor_ids)
         try:
             async for sample in self.telemetry.stream():
                 try:
+                    logger.debug("telemetry sample sensor=%s metric=%s value=%s status=%s",
+                                 sample.sensor_id, sample.metric, sample.value, sample.status)
                     await self.runtime.broker.publish(
                         BaseEvent(
                             event_type=EventType.TELEMETRY,
@@ -250,11 +271,20 @@ class EdgeOrchestrator:
                         )
                         await self.runtime.broker.publish(event)
                         self._audit(event)
+                        logger.warning(
+                            "anomaly detected sensor=%s kind=%s value=%.2f message=%s",
+                            sample.sensor_id,
+                            anomaly.kind,
+                            anomaly.value,
+                            anomaly.message,
+                        )
                         if sample.sensor_id == "TMP_BRG_02" and anomaly.kind == "THRESHOLD_CRITICAL":
                             await self._trip_relay(reason="thermal_critical")
 
                     if sample.sensor_id == "TMP_BRG_02":
                         rul_state = self.rul.observe(sample.value)
+                        logger.debug("RUL update health=%.1f%% remaining=%.1fh status=%s",
+                                     rul_state.health_pct, rul_state.remaining_hours, rul_state.status)
                         await self.runtime.broker.publish(
                             BaseEvent(
                                 event_type=EventType.RUL_UPDATE,
@@ -268,6 +298,7 @@ class EdgeOrchestrator:
         except Exception as exc:  # noqa: BLE001
             logger.exception("telemetry loop error: %s", exc)
             await asyncio.sleep(1.0)
+        logger.info("telemetry loop stopped")
 
     # ---------------------------------------------------------------- support
 
@@ -283,6 +314,7 @@ class EdgeOrchestrator:
         )
 
     async def _heartbeat_loop(self) -> None:
+        logger.debug("heartbeat loop started")
         while not self._shutdown.is_set():
             await asyncio.sleep(5.0)
             if self._shutdown.is_set():
@@ -298,6 +330,7 @@ class EdgeOrchestrator:
                     },
                 )
             )
+        logger.debug("heartbeat loop stopped")
 
     def _register_signal_handlers(self) -> None:
         try:
@@ -320,6 +353,12 @@ class EdgeOrchestrator:
 
     async def run(self, with_api: bool = True) -> None:
         self._register_signal_handlers()
+        logger.info(
+            "starting orchestrator node=%s backend=%s api=%s",
+            self.settings.edge.node_id,
+            self.settings.vision.backend,
+            with_api,
+        )
         self.runtime.video_stream.start()
         if self.runtime.video_stream.error is not None:
             logger.error("video stream failed to start: %s", self.runtime.video_stream.error)
@@ -344,6 +383,7 @@ class EdgeOrchestrator:
                     name="api",
                 )
             )
+            logger.info("fastapi control plane listening on %s:%d", cfg.host, cfg.port)
         logger.info(
             "edge orchestrator online: backend=%s latency_budget=%dms",
             self.settings.vision.backend,
@@ -352,6 +392,7 @@ class EdgeOrchestrator:
         try:
             await asyncio.wait(self._tasks, return_when=asyncio.FIRST_COMPLETED)
         finally:
+            logger.info("orchestrator shutting down")
             await self._release_resources()
 
 

@@ -60,6 +60,12 @@ class ThermalRulEstimator:
             else "WARN" if health < 50.0
             else "HEALTHY"
         )
+        if status == "CRITICAL":
+            logger.warning("RUL CRITICAL health=%.1f%% remaining=%.1fh damage=%.3f",
+                           health, remaining, self._damage)
+        elif status == "WARN":
+            logger.info("RUL WARN health=%.1f%% remaining=%.1fh damage=%.3f",
+                        health, remaining, self._damage)
         return RulState(
             sensor_id="TMP_BRG_02",
             remaining_hours=remaining,

@@ -15,7 +15,7 @@ video:
 
 vision:
   model: "yolov8n.pt"
-  backend: "yolov8"                  # synthetic (zero-hardware demo) | yolov8
+  backend: "synthetic"                  # synthetic (zero-hardware demo) | yolov8
   conf_threshold: 0.45
   iou_threshold: 0.5
   device: "cpu"
@@ -70,6 +70,7 @@ api:
   host: "0.0.0.0"
   port: 8080
   edge_prefix: "/edge"
+  debug: true
 
 dashboard:
   host: "127.0.0.1"
@@ -79,3 +80,6 @@ dashboard:
 logging:
   audit_dir: "logs"
   level: "INFO"
+  log_file: "logs/isip_edge.log"
+  max_bytes: 5242880
+  backup_count: 5

@@ -8,7 +8,7 @@ vibration, toxic gas) to autonomously detect hazards, predict equipment
 failure, and trip local PLC E-Stop hardware — completely offline, with a
 sub-20ms safety loop.
 
-Human CCTV operators miss up to 45% of safety incidents due to fatigue, and
+Human CCTV operators miss safety incidents due to fatigue, and
 cloud-based safety solutions can't meet sub-second response limits because of
 network latency and bandwidth constraints. ISIP runs entirely on edge hardware
 (NVIDIA Jetson Orin Nano / AGX Orin, Raspberry Pi 5 + Hailo-8, Intel NUC), so
